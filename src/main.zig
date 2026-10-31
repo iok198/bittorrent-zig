@@ -10,7 +10,7 @@ pub fn main(init: std.process.Init) !void {
     const input = "d7:meaningi42e4:wiki7:bencodee";
     // const input = "0:i32e";
     const tokens = try Tokenizer.tokenize(arena, input);
-    Tokenizer.printTokens(input, tokens.items);
-    const expr = try Parser.parse(input, tokens.items);
+    Tokenizer.printTokens(tokens.items);
+    const expr = try Parser.parse(tokens.items);
     std.debug.print("{any}", .{expr});
 }

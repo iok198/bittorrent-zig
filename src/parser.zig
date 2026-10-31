@@ -1,12 +1,12 @@
 const std = @import("std");
 
-const DictEntry = struct { key: []u8, val: *Expr };
+const DictEntry = struct { key: []const u8, val: *Expr };
 const Expr = union(enum) { string: []const u8, int: i32, dict: []DictEntry, list: []*Expr };
 const Tokenizer = @import("tokenizer.zig");
 
 const ParseError = error{ NullRootValue, MultipleRootValues, InvalidToken } || std.mem.Allocator.Error;
 
-pub fn parse(comptime input: []const u8, tokens: []Tokenizer.Token) ParseError!Expr {
+pub fn parse(tokens: []Tokenizer.Token) ParseError!Expr {
     if (tokens.len == 0) return ParseError.NullRootValue;
 
     switch (tokens[0]) {
@@ -19,7 +19,7 @@ pub fn parse(comptime input: []const u8, tokens: []Tokenizer.Token) ParseError!E
         },
         .string => |str| {
             if (tokens.len == 1) {
-                return .{ .string = input[str.pos .. str.pos + str.len] };
+                return .{ .string = str };
             } else {
                 return ParseError.MultipleRootValues;
             }
@@ -37,7 +37,7 @@ test "Parses root integers and strings" {
     const numInput = "i32e";
     var numTokens = try Tokenizer.tokenize(allocator, numInput);
     defer numTokens.deinit(allocator);
-    const numExpr = try parse(numInput, numTokens.items);
+    const numExpr = try parse(numTokens.items);
 
     switch (numExpr) {
         .int => |num| try expectEqual(32, num),
@@ -47,7 +47,7 @@ test "Parses root integers and strings" {
     const strInput = "5:hello";
     var strTokens = try Tokenizer.tokenize(allocator, strInput);
     defer strTokens.deinit(allocator);
-    const strExpr = try parse(strInput, strTokens.items);
+    const strExpr = try parse(strTokens.items);
 
     switch (strExpr) {
         .string => |str| try expectEqualStrings("hello", str),
@@ -57,9 +57,9 @@ test "Parses root integers and strings" {
     const multipleNums = "i32ei32e";
     var multipleNumsTokens = try Tokenizer.tokenize(allocator, multipleNums);
     defer multipleNumsTokens.deinit(allocator);
-    try expectError(ParseError.MultipleRootValues, parse(multipleNums, multipleNumsTokens.items));
+    try expectError(ParseError.MultipleRootValues, parse(multipleNumsTokens.items));
 
     var noTokens = try Tokenizer.tokenize(allocator, "");
     defer noTokens.deinit(allocator);
-    try expectError(ParseError.NullRootValue, parse("", noTokens.items));
+    try expectError(ParseError.NullRootValue, parse(noTokens.items));
 }

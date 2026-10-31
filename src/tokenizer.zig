@@ -1,7 +1,7 @@
 const std = @import("std");
 const ArrayList = std.ArrayList;
 
-pub const Token = union(enum) { string: struct { pos: usize, len: usize }, int: i32, list_begin, dict_begin, end };
+pub const Token = union(enum) { string: []const u8, int: i32, list_begin, dict_begin, end };
 
 const TokenizerError = error{ invalidType, zeroPrefixed, negativeZero, missingColonAfterStringLength, unexpectedEOF, unendedInt } || std.mem.Allocator.Error;
 
@@ -68,7 +68,7 @@ pub fn tokenize(allocator: std.mem.Allocator, comptime input: []const u8) Tokeni
 
                 if (index + str_len > input.len) return TokenizerError.unexpectedEOF;
 
-                try tokens.append(allocator, .{ .string = .{ .pos = index, .len = str_len } });
+                try tokens.append(allocator, .{ .string = input[index .. index + str_len] });
                 index += if (str_len == 0) 0 else str_len - 1;
             },
             else => return TokenizerError.invalidType,
@@ -78,14 +78,14 @@ pub fn tokenize(allocator: std.mem.Allocator, comptime input: []const u8) Tokeni
     return tokens;
 }
 
-pub fn printTokens(comptime input: []const u8, tokens: []const Token) void {
+pub fn printTokens(tokens: []const Token) void {
     for (tokens) |token| {
         switch (token) {
             .dict_begin => print("DICT_BEGIN\n", .{}),
             .list_begin => print("LIST_BEGIN\n", .{}),
             .end => print("END\n", .{}),
             .int => |num| print("INT: {d}\n", .{num}),
-            .string => |str| print("STRING: {s}\n", .{if (str.len == 0) "" else input[str.pos .. str.pos + str.len]}),
+            .string => |str| print("STRING: {s}\n", .{str}),
         }
     }
 }
@@ -94,12 +94,32 @@ fn expectTokenOutput(comptime input: []const u8, output: []const Token) !void {
     const allocator = std.testing.allocator;
     var tokens = try tokenize(allocator, input);
     defer tokens.deinit(allocator);
-    try std.testing.expectEqualSlices(Token, output, tokens.items);
+
+    for (output, tokens.items) |expected, actual| {
+        if (expected == .string and actual == .string) {
+            try std.testing.expectEqualStrings(expected.string, actual.string);
+        } else {
+            try std.testing.expectEqual(expected, actual);
+        }
+    }
+    // try std.testing.expectEqualSlices(Token, output, tokens.items);
 }
 
 fn expectError(comptime input: []const u8, output: TokenizerError) !void {
     const allocator = std.testing.allocator;
     try std.testing.expectError(output, tokenize(allocator, input));
+}
+
+fn expectStringToken(comptime input: []const u8, token: Token) !void {
+    const str = switch (token) {
+        .string => |str| str,
+        else => @panic("String not returned"),
+    };
+    try std.testing.expectEqualStrings(input, str);
+}
+
+fn getTokens(allocator: std.mem.Allocator, comptime input: []const u8) !ArrayList(Token) {
+    return try tokenize(allocator, input);
 }
 
 test "Tokenizes single character tokens and empty input" {
@@ -123,9 +143,8 @@ test "Tokenizes numbers" {
 }
 
 test "Tokenizes strings" {
-    const owo = Token{ .string = .{ .pos = 2, .len = 3 } };
-    try expectTokenOutput("3:owo", &[_]Token{owo});
-    try expectTokenOutput("3:owoi32e", &[_]Token{ owo, .{ .int = 32 } });
-    try expectTokenOutput("2:he3:shede", &[_]Token{ .{ .string = .{ .pos = 2, .len = 2 } }, .{ .string = .{ .pos = 6, .len = 3 } }, .dict_begin, .end });
+    try expectTokenOutput("3:owo", &[_]Token{.{ .string = "owo" }});
+    try expectTokenOutput("3:owoi32e", &[_]Token{ .{ .string = "owo" }, .{ .int = 32 } });
+    try expectTokenOutput("2:he3:shede", &[_]Token{ .{ .string = "he" }, .{ .string = "she" }, .dict_begin, .end });
     try expectError("5:owo", TokenizerError.unexpectedEOF);
 }
