@@ -1,83 +1,90 @@
 const std = @import("std");
 const ArrayList = std.ArrayList;
 
-pub const Token = union(enum) { string: []const u8, int: i32, list_begin, dict_begin, end };
+pub const Token = union(enum) { string: []const u8, int: i32, list_begin, dict_begin, end, eof };
 
 const TokenizerError = error{ invalidType, zeroPrefixed, negativeZero, missingColonAfterStringLength, unexpectedEOF, unendedInt } || std.mem.Allocator.Error;
 
 const print = std.debug.print;
-pub fn tokenize(allocator: std.mem.Allocator, comptime input: []const u8) TokenizerError![]Token {
-    var index = @as(usize, 0);
-    var tokens: ArrayList(Token) = .empty;
-    errdefer tokens.deinit(allocator);
+const Tokenizer = struct {
+    const Self = @This();
+    input: []const u8,
+    index: usize,
 
-    while (index < input.len) : (index += 1) {
-        switch (input[index]) {
-            'd' => try tokens.append(allocator, .dict_begin),
-            'l' => try tokens.append(allocator, .list_begin),
-            'e' => try tokens.append(allocator, .end),
-            'i' => {
-                var buf_len = @as(usize, 0);
-                var sign = @as(i32, 1);
-                var num = @as(i32, 0);
-                index += 1;
-
-                while (index + buf_len < input.len and input[index + buf_len] != 'e') : (buf_len += 1) {
-                    const current = input[index + buf_len];
-
-                    if (buf_len == 0 and current == '-') {
-                        sign = -1;
-                        continue;
-                    }
-
-                    if (buf_len > 0 and input[index] == '0') {
-                        return TokenizerError.zeroPrefixed;
-                    }
-
-                    if (current >= '0' and current <= '9') {
-                        num = (num * 10) + (current - '0');
-                        continue;
-                    }
-
-                    return TokenizerError.invalidType;
-                }
-
-                if (index + buf_len >= input.len) return TokenizerError.unendedInt;
-                if (num == 0 and sign == -1) return TokenizerError.negativeZero;
-
-                try tokens.append(allocator, .{ .int = num * sign });
-                index += buf_len;
-            },
-            '0'...'9' => {
-                var buf_len = @as(usize, 0);
-                var str_len = input[index] - '0';
-                index += 1;
-
-                while (index + buf_len < input.len and input[index + buf_len] != ':') : (buf_len += 1) {
-                    const current = input[index + buf_len];
-
-                    if (current >= '0' and current <= '9') {
-                        str_len = (str_len * 10) + (current - '0');
-                        continue;
-                    }
-
-                    return TokenizerError.invalidType;
-                }
-
-                if (input[index + buf_len] != ':') return TokenizerError.missingColonAfterStringLength;
-                index += buf_len + 1;
-
-                if (index + str_len > input.len) return TokenizerError.unexpectedEOF;
-
-                try tokens.append(allocator, .{ .string = input[index..][0..str_len] });
-                index += if (str_len == 0) 0 else str_len - 1;
-            },
-            else => return TokenizerError.invalidType,
-        }
+    fn init(input: []const u8) Self {
+        return .{ .input = input, .index = 0 };
     }
 
-    return try tokens.toOwnedSlice(allocator);
-}
+    fn next(self: *Self) TokenizerError!Token {
+        while (self.index < self.input.len) {
+            defer self.index += 1;
+            switch (self.input[self.index]) {
+                'd' => return .dict_begin,
+                'l' => return .list_begin,
+                'e' => return .end,
+                'i' => {
+                    var buf_len = @as(usize, 0);
+                    var sign = @as(i32, 1);
+                    var num = @as(i32, 0);
+                    self.index += 1;
+
+                    while (self.index + buf_len < self.input.len and self.input[self.index + buf_len] != 'e') : (buf_len += 1) {
+                        const current = self.input[self.index + buf_len];
+
+                        if (buf_len == 0 and current == '-') {
+                            sign = -1;
+                            continue;
+                        }
+
+                        if (buf_len > 0 and self.input[self.index] == '0') {
+                            return TokenizerError.zeroPrefixed;
+                        }
+
+                        if (current >= '0' and current <= '9') {
+                            num = (num * 10) + (current - '0');
+                            continue;
+                        }
+
+                        return TokenizerError.invalidType;
+                    }
+
+                    if (self.index + buf_len >= self.input.len) return TokenizerError.unendedInt;
+                    if (num == 0 and sign == -1) return TokenizerError.negativeZero;
+
+                    self.index += buf_len;
+                    return .{ .int = num * sign };
+                },
+                '0'...'9' => {
+                    var buf_len = @as(usize, 0);
+                    var str_len = self.input[self.index] - '0';
+                    self.index += 1;
+
+                    while (self.index + buf_len < self.input.len and self.input[self.index + buf_len] != ':') : (buf_len += 1) {
+                        const current = self.input[self.index + buf_len];
+
+                        if (current >= '0' and current <= '9') {
+                            str_len = (str_len * 10) + (current - '0');
+                            continue;
+                        }
+
+                        return TokenizerError.invalidType;
+                    }
+
+                    if (self.input[self.index + buf_len] != ':') return TokenizerError.missingColonAfterStringLength;
+                    self.index += buf_len + 1;
+
+                    if (self.index + str_len > self.input.len) return TokenizerError.unexpectedEOF;
+
+                    defer self.index += if (str_len == 0) 0 else str_len - 1;
+                    return .{ .string = self.input[self.index..][0..str_len] };
+                },
+                else => return TokenizerError.invalidType,
+            }
+        }
+
+        return .eof;
+    }
+};
 
 pub fn printTokens(tokens: []const Token) void {
     for (tokens) |token| {
@@ -92,10 +99,11 @@ pub fn printTokens(tokens: []const Token) void {
 }
 
 fn expectTokenOutput(comptime input: []const u8, output: []const Token) !void {
-    const allocator = std.testing.allocator;
-    const tokens = try tokenize(allocator, input);
-    defer allocator.free(tokens);
-    for (output, tokens) |expected, actual| {
+    var tokenizer: Tokenizer = .init(input);
+    var index = @as(usize, 0);
+    while (index < output.len) : (index += 1) {
+        const expected = output[index];
+        const actual = try tokenizer.next();
         if (expected == .string and actual == .string) {
             try std.testing.expectEqualStrings(expected.string, actual.string);
         } else {
@@ -105,8 +113,8 @@ fn expectTokenOutput(comptime input: []const u8, output: []const Token) !void {
 }
 
 fn expectError(comptime input: []const u8, output: TokenizerError) !void {
-    const allocator = std.testing.allocator;
-    try std.testing.expectError(output, tokenize(allocator, input));
+    var tokenizer: Tokenizer = .init(input);
+    try std.testing.expectError(output, tokenizer.next());
 }
 
 fn expectStringToken(comptime input: []const u8, token: Token) !void {
