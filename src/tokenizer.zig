@@ -6,9 +6,10 @@ pub const Token = union(enum) { string: []const u8, int: i32, list_begin, dict_b
 const TokenizerError = error{ invalidType, zeroPrefixed, negativeZero, missingColonAfterStringLength, unexpectedEOF, unendedInt } || std.mem.Allocator.Error;
 
 const print = std.debug.print;
-pub fn tokenize(allocator: std.mem.Allocator, comptime input: []const u8) TokenizerError!ArrayList(Token) {
+pub fn tokenize(allocator: std.mem.Allocator, comptime input: []const u8) TokenizerError![]Token {
     var index = @as(usize, 0);
     var tokens: ArrayList(Token) = .empty;
+    errdefer tokens.deinit(allocator);
 
     while (index < input.len) : (index += 1) {
         switch (input[index]) {
@@ -68,14 +69,14 @@ pub fn tokenize(allocator: std.mem.Allocator, comptime input: []const u8) Tokeni
 
                 if (index + str_len > input.len) return TokenizerError.unexpectedEOF;
 
-                try tokens.append(allocator, .{ .string = input[index .. index + str_len] });
+                try tokens.append(allocator, .{ .string = input[index..][0..str_len] });
                 index += if (str_len == 0) 0 else str_len - 1;
             },
             else => return TokenizerError.invalidType,
         }
     }
 
-    return tokens;
+    return try tokens.toOwnedSlice(allocator);
 }
 
 pub fn printTokens(tokens: []const Token) void {
@@ -92,17 +93,15 @@ pub fn printTokens(tokens: []const Token) void {
 
 fn expectTokenOutput(comptime input: []const u8, output: []const Token) !void {
     const allocator = std.testing.allocator;
-    var tokens = try tokenize(allocator, input);
-    defer tokens.deinit(allocator);
-
-    for (output, tokens.items) |expected, actual| {
+    const tokens = try tokenize(allocator, input);
+    defer allocator.free(tokens);
+    for (output, tokens) |expected, actual| {
         if (expected == .string and actual == .string) {
             try std.testing.expectEqualStrings(expected.string, actual.string);
         } else {
             try std.testing.expectEqual(expected, actual);
         }
     }
-    // try std.testing.expectEqualSlices(Token, output, tokens.items);
 }
 
 fn expectError(comptime input: []const u8, output: TokenizerError) !void {
@@ -116,10 +115,6 @@ fn expectStringToken(comptime input: []const u8, token: Token) !void {
         else => @panic("String not returned"),
     };
     try std.testing.expectEqualStrings(input, str);
-}
-
-fn getTokens(allocator: std.mem.Allocator, comptime input: []const u8) !ArrayList(Token) {
-    return try tokenize(allocator, input);
 }
 
 test "Tokenizes single character tokens and empty input" {
