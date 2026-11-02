@@ -113,25 +113,25 @@ const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const expectError = std.testing.expectError;
 const expectEqualSlices = std.testing.expectEqualSlices;
-fn expectEqualExprs(left: *const Expr, right: *const Expr) !void {
-    switch (left.*) {
+fn expectEqualExprs(left: Expr, right: Expr) !void {
+    switch (left) {
         .int => |left_num| {
-            switch (right.*) {
+            switch (right) {
                 .int => |right_num| try expectEqual(left_num, right_num),
                 else => @panic("not same type"),
             }
         },
         .string => |left_str| {
-            switch (right.*) {
+            switch (right) {
                 .string => |right_str| try expectEqualStrings(left_str, right_str),
                 else => @panic("not same type"),
             }
         },
         .list => |left_list| {
-            switch (right.*) {
+            switch (right) {
                 .list => |right_list| {
                     try expectEqual(left_list.len, right_list.len);
-                    for (left_list, right_list) |*left_item, *right_item| {
+                    for (left_list, right_list) |left_item, right_item| {
                         try expectEqualExprs(left_item, right_item);
                     }
                 },
@@ -139,12 +139,12 @@ fn expectEqualExprs(left: *const Expr, right: *const Expr) !void {
             }
         },
         .dict => |left_dict| {
-            switch (right.*) {
+            switch (right) {
                 .dict => |right_dict| {
                     try expectEqual(left_dict.len, right_dict.len);
                     for (left_dict, right_dict) |left_entry, right_entry| {
                         try expectEqualStrings(left_entry.key, right_entry.key);
-                        try expectEqualExprs(&left_entry.val, &right_entry.val);
+                        try expectEqualExprs(left_entry.val, right_entry.val);
                     }
                 },
                 else => @panic("not same type"),
@@ -157,19 +157,11 @@ test "Parses root integers and strings" {
     const allocator = std.testing.allocator;
     var numInput = Tokenizer.init("i32e");
     const numExpr = try parse(allocator, &numInput);
-
-    switch (numExpr) {
-        .int => |num| try expectEqual(32, num),
-        else => @panic("Int not returned"),
-    }
+    try expectEqualExprs(Expr{ .int = 32 }, numExpr);
 
     var strInput = Tokenizer.init("5:hello");
     const strExpr = try parse(allocator, &strInput);
-
-    switch (strExpr) {
-        .string => |str| try expectEqualStrings("hello", str),
-        else => @panic("String not returned"),
-    }
+    try expectEqualExprs(Expr{ .string = "hello" }, strExpr);
 
     var multipleNums = Tokenizer.init("i32ei32e");
     try expectError(ParseError.MultipleRootValues, parse(allocator, &multipleNums));
@@ -184,14 +176,14 @@ test "Parses lists" {
     var expr = try parse(allocator, &tokens);
     defer expr.deinit(allocator);
     var temp = [_]Expr{ .{ .int = 32 }, .{ .string = "owo" } };
-    try expectEqualExprs(&expr, &Expr{ .list = &temp });
+    try expectEqualExprs(expr, Expr{ .list = &temp });
     var embeddedListTokens = Tokenizer.init("lli32e2:hili27eeee");
     var embeddedListExpr = try parse(allocator, &embeddedListTokens);
     defer embeddedListExpr.deinit(allocator);
     var level3 = [_]Expr{.{ .int = 27 }};
     var level2 = [_]Expr{ .{ .int = 32 }, .{ .string = "hi" }, .{ .list = &level3 } };
     var level1 = [_]Expr{.{ .list = &level2 }};
-    try expectEqualExprs(&Expr{ .list = &level1 }, &embeddedListExpr);
+    try expectEqualExprs(Expr{ .list = &level1 }, embeddedListExpr);
     var noEnd = Tokenizer.init("li32e2:hi");
     try expectError(ParseError.UnendedList, parse(allocator, &noEnd));
     var noEndEmbedded = Tokenizer.init("li32e2:hili21ee");
@@ -204,12 +196,12 @@ test "Parse dict" {
     var expr = try parse(allocator, &tokens);
     defer expr.deinit(allocator);
     var entries = [_]DictEntry{DictEntry{ .key = "val", .val = .{ .int = 32 } }};
-    try expectEqualExprs(&Expr{ .dict = &entries }, &expr);
+    try expectEqualExprs(Expr{ .dict = &entries }, expr);
     var embeddedDict = Tokenizer.init("d4:dictd3:vali32eee");
     var embeddedEntries = [_]DictEntry{.{ .key = "dict", .val = .{ .dict = &entries } }};
     var embeddedExpr = try parse(allocator, &embeddedDict);
     defer embeddedExpr.deinit(allocator);
-    try expectEqualExprs(&Expr{ .dict = &embeddedEntries }, &embeddedExpr);
+    try expectEqualExprs(Expr{ .dict = &embeddedEntries }, embeddedExpr);
     var noEnd = Tokenizer.init("d4:word4:tell");
     try expectError(ParseError.UnendedDict, parse(allocator, &noEnd));
     var noEndEmbedded = Tokenizer.init("d4:dictd4:name3:bobe");
@@ -223,10 +215,10 @@ test "Embedded complex expressions" {
     var dictList = Tokenizer.init("d4:listli32e3:owoee");
     var expr = try parse(allocator, &dictList);
     defer expr.deinit(allocator);
-    try expectEqualExprs(&Expr{ .dict = &dictListExpr }, &expr);
+    try expectEqualExprs(Expr{ .dict = &dictListExpr }, expr);
     var listDictExpr = [_]Expr{.{ .dict = &dictListExpr }};
     var listDict = Tokenizer.init("ld4:listli32e3:owoeee");
     var expr2 = try parse(allocator, &listDict);
     defer expr2.deinit(allocator);
-    try expectEqualExprs(&Expr{ .list = &listDictExpr }, &expr2);
+    try expectEqualExprs(Expr{ .list = &listDictExpr }, expr2);
 }
