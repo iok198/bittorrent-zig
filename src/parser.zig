@@ -4,7 +4,7 @@ const Tokenizer = @import("tokenizer.zig");
 const Token = Tokenizer.Token;
 
 const DictEntry = struct { key: []const u8, val: Expr };
-const Expr = union(enum) {
+pub const Expr = union(enum) {
     const Self = @This();
 
     string: []const u8,

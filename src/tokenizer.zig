@@ -112,14 +112,6 @@ fn expectError(comptime input: []const u8, output: TokenizerError) !void {
     try std.testing.expectError(output, tokenizer.next());
 }
 
-fn expectStringToken(comptime input: []const u8, token: Token) !void {
-    const str = switch (token) {
-        .string => |str| str,
-        else => @panic("String not returned"),
-    };
-    try std.testing.expectEqualStrings(input, str);
-}
-
 input: []const u8,
 index: usize,
 
