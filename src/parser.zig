@@ -26,14 +26,12 @@ const Expr = union(enum) {
         }
     }
 };
-const ParseError = error{ NullRootValue, MultipleRootValues, InvalidToken, UnendedList } || Tokenizer.TokenizerError || std.mem.Allocator.Error;
+const ParseError = error{ NullRootValue, MultipleRootValues, InvalidToken, UnendedList, UnendedDict } || Tokenizer.TokenizerError || std.mem.Allocator.Error;
 
 fn parseList(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Expr {
     var list: ArrayList(Expr) = .empty;
     errdefer {
-        for (list.items) |*item| {
-            item.deinit(allocator);
-        }
+        for (list.items) |*item| item.deinit(allocator);
         list.deinit(allocator);
     }
 
@@ -45,74 +43,76 @@ fn parseList(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Exp
             .list_begin => {
                 const sublist = try parseList(allocator, tokenizer);
                 list.append(allocator, sublist) catch |err| {
-                    var _sublist = sublist;
-                    _sublist.deinit(allocator);
+                    var temp = sublist;
+                    temp.deinit(allocator);
+                    return err;
+                };
+            },
+            .dict_begin => {
+                const dict = try parseDict(allocator, tokenizer);
+                list.append(allocator, dict) catch |err| {
+                    var temp = dict;
+                    temp.deinit(allocator);
                     return err;
                 };
             },
             .eof => return ParseError.UnendedList,
-            else => {
-                std.debug.print("Unexpected token: {any}\n", .{token});
-                return ParseError.InvalidToken;
-            },
         }
     } else |err| return err;
 
     return .{ .list = try list.toOwnedSlice(allocator) };
 }
 
-pub fn parse(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Expr {
+fn parseDict(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Expr {
+    var entries = ArrayList(DictEntry).empty;
+    errdefer {
+        for (entries.items) |*entry| entry.val.deinit(allocator);
+        entries.deinit(allocator);
+    }
+
+    while (tokenizer.next()) |token| {
+        switch (token) {
+            .end => break,
+            .eof => return ParseError.UnendedDict,
+            .string => |key| {
+                const val = try parseExpr(allocator, tokenizer);
+                entries.append(allocator, .{ .key = key, .val = val }) catch |err| {
+                    var temp = val;
+                    temp.deinit(allocator);
+                    return err;
+                };
+            },
+            else => return ParseError.InvalidToken,
+        }
+    } else |err| return err;
+
+    return .{ .dict = try entries.toOwnedSlice(allocator) };
+}
+
+fn parseExpr(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Expr {
     const first = tokenizer.next() catch return ParseError.NullRootValue;
 
     switch (first) {
-        .int => |num| {
-            if (try tokenizer.next() != .eof) return ParseError.MultipleRootValues;
-            return .{ .int = num };
-        },
-        .string => |str| {
-            if (try tokenizer.next() != .eof) return ParseError.MultipleRootValues;
-            return .{ .string = str };
-        },
-        .list_begin => {
-            const list = try parseList(allocator, tokenizer);
-            if (try tokenizer.next() != .eof) return ParseError.MultipleRootValues;
-            return list;
-        },
+        .int => |num| return .{ .int = num },
+        .string => |str| return .{ .string = str },
+        .list_begin => return try parseList(allocator, tokenizer),
+        .dict_begin => return try parseDict(allocator, tokenizer),
         .eof => return ParseError.NullRootValue,
-        else => return ParseError.InvalidToken,
+        .end => return ParseError.InvalidToken,
     }
+}
+
+pub fn parse(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Expr {
+    const expr = try parseExpr(allocator, tokenizer);
+    const eos = try tokenizer.next();
+    if (eos != .eof) return ParseError.MultipleRootValues;
+    return expr;
 }
 
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const expectError = std.testing.expectError;
 const expectEqualSlices = std.testing.expectEqualSlices;
-
-test "Parses root integers and strings" {
-    const allocator = std.testing.allocator;
-    var numInput = Tokenizer.init("i32e");
-    const numExpr = try parse(allocator, &numInput);
-
-    switch (numExpr) {
-        .int => |num| try expectEqual(32, num),
-        else => @panic("Int not returned"),
-    }
-
-    var strInput = Tokenizer.init("5:hello");
-    const strExpr = try parse(allocator, &strInput);
-
-    switch (strExpr) {
-        .string => |str| try expectEqualStrings("hello", str),
-        else => @panic("String not returned"),
-    }
-
-    var multipleNums = Tokenizer.init("i32ei32e");
-    try expectError(ParseError.MultipleRootValues, parse(allocator, &multipleNums));
-
-    var noTokens = Tokenizer.init("");
-    try expectError(ParseError.NullRootValue, parse(allocator, &noTokens));
-}
-
 fn expectEqualExprs(left: *const Expr, right: *const Expr) !void {
     switch (left.*) {
         .int => |left_num| {
@@ -153,6 +153,31 @@ fn expectEqualExprs(left: *const Expr, right: *const Expr) !void {
     }
 }
 
+test "Parses root integers and strings" {
+    const allocator = std.testing.allocator;
+    var numInput = Tokenizer.init("i32e");
+    const numExpr = try parse(allocator, &numInput);
+
+    switch (numExpr) {
+        .int => |num| try expectEqual(32, num),
+        else => @panic("Int not returned"),
+    }
+
+    var strInput = Tokenizer.init("5:hello");
+    const strExpr = try parse(allocator, &strInput);
+
+    switch (strExpr) {
+        .string => |str| try expectEqualStrings("hello", str),
+        else => @panic("String not returned"),
+    }
+
+    var multipleNums = Tokenizer.init("i32ei32e");
+    try expectError(ParseError.MultipleRootValues, parse(allocator, &multipleNums));
+
+    var noTokens = Tokenizer.init("");
+    try expectError(ParseError.NullRootValue, parse(allocator, &noTokens));
+}
+
 test "Parses lists" {
     const allocator = std.testing.allocator;
     var tokens = Tokenizer.init("li32e3:owoe");
@@ -173,20 +198,35 @@ test "Parses lists" {
     try expectError(ParseError.UnendedList, parse(allocator, &noEndEmbedded));
 }
 
-test "Expr allocation" {
+test "Parse dict" {
     const allocator = std.testing.allocator;
-    const num = try allocator.create(Expr);
-    defer allocator.destroy(num);
-    num.* = .{ .int = 32 };
-    const str = try allocator.create(Expr);
-    defer allocator.destroy(str);
-    str.* = .{ .int = 32 };
-    const list = try allocator.create(Expr);
-    defer allocator.destroy(list);
-    var vals = [_]Expr{ .{ .int = 32 }, .{ .string = "hello" } };
-    list.* = .{ .list = &vals };
-    const embeddedList = try allocator.create(Expr);
-    defer allocator.destroy(embeddedList);
-    var embeddedVal = [_]Expr{.{ .list = &vals }};
-    embeddedList.* = .{ .list = &embeddedVal };
+    var tokens = Tokenizer.init("d3:vali32ee");
+    var expr = try parse(allocator, &tokens);
+    defer expr.deinit(allocator);
+    var entries = [_]DictEntry{DictEntry{ .key = "val", .val = .{ .int = 32 } }};
+    try expectEqualExprs(&Expr{ .dict = &entries }, &expr);
+    var embeddedDict = Tokenizer.init("d4:dictd3:vali32eee");
+    var embeddedEntries = [_]DictEntry{.{ .key = "dict", .val = .{ .dict = &entries } }};
+    var embeddedExpr = try parse(allocator, &embeddedDict);
+    defer embeddedExpr.deinit(allocator);
+    try expectEqualExprs(&Expr{ .dict = &embeddedEntries }, &embeddedExpr);
+    var noEnd = Tokenizer.init("d4:word4:tell");
+    try expectError(ParseError.UnendedDict, parse(allocator, &noEnd));
+    var noEndEmbedded = Tokenizer.init("d4:dictd4:name3:bobe");
+    try expectError(ParseError.UnendedDict, parse(allocator, &noEndEmbedded));
+}
+
+test "Embedded complex expressions" {
+    const allocator = std.testing.allocator;
+    var list = [_]Expr{ .{ .int = 32 }, .{ .string = "owo" } };
+    var dictListExpr = [_]DictEntry{.{ .key = "list", .val = Expr{ .list = &list } }};
+    var dictList = Tokenizer.init("d4:listli32e3:owoee");
+    var expr = try parse(allocator, &dictList);
+    defer expr.deinit(allocator);
+    try expectEqualExprs(&Expr{ .dict = &dictListExpr }, &expr);
+    var listDictExpr = [_]Expr{.{ .dict = &dictListExpr }};
+    var listDict = Tokenizer.init("ld4:listli32e3:owoeee");
+    var expr2 = try parse(allocator, &listDict);
+    defer expr2.deinit(allocator);
+    try expectEqualExprs(&Expr{ .list = &listDictExpr }, &expr2);
 }

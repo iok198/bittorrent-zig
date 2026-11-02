@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub const Token = union(enum) { string: []const u8, int: i32, list_begin, dict_begin, end, eof };
 
-pub const TokenizerError = error{ invalidType, zeroPrefixed, negativeZero, missingColonAfterStringLength, unexpectedEOF, unendedInt } || std.mem.Allocator.Error;
+pub const TokenizerError = error{ invalidType, zeroPrefixed, negativeZero, missingColonAfterStringLength, unexpectedEOF, unendedInt };
 
 const print = std.debug.print;
 const Self = @This();
