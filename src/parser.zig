@@ -1,15 +1,16 @@
 const std = @import("std");
 const ArrayList = std.ArrayList;
+const Map = std.StringHashMap(Expr);
 const Tokenizer = @import("tokenizer.zig");
 const Token = Tokenizer.Token;
 
-const DictEntry = struct { key: []const u8, val: Expr };
+// const DictEntry = struct { key: []const u8, val: Expr };
 pub const Expr = union(enum) {
     const Self = @This();
 
     string: []const u8,
     int: i32,
-    dict: []DictEntry,
+    dict: Map,
     list: []Expr,
 
     pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
@@ -18,9 +19,10 @@ pub const Expr = union(enum) {
                 for (list) |*item| item.deinit(allocator);
                 allocator.free(list);
             },
-            .dict => |dict| {
-                for (dict) |*entry| entry.val.deinit(allocator);
-                allocator.free(dict);
+            .dict => |*dict| {
+                var iter = dict.valueIterator();
+                while (iter.next()) |val| val.deinit(allocator);
+                dict.deinit();
             },
             else => {},
         }
@@ -64,10 +66,11 @@ fn parseList(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Exp
 }
 
 fn parseDict(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Expr {
-    var entries = ArrayList(DictEntry).empty;
+    var entries = Map.init(allocator);
     errdefer {
-        for (entries.items) |*entry| entry.val.deinit(allocator);
-        entries.deinit(allocator);
+        var iter = entries.valueIterator();
+        while (iter.next()) |entry| entry.deinit(allocator);
+        entries.deinit();
     }
 
     while (tokenizer.next()) |token| {
@@ -76,7 +79,7 @@ fn parseDict(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Exp
             .eof => return ParseError.UnendedDict,
             .string => |key| {
                 const val = try parseExpr(allocator, tokenizer);
-                entries.append(allocator, .{ .key = key, .val = val }) catch |err| {
+                entries.put(key, val) catch |err| {
                     var temp = val;
                     temp.deinit(allocator);
                     return err;
@@ -86,7 +89,7 @@ fn parseDict(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Exp
         }
     } else |err| return err;
 
-    return .{ .dict = try entries.toOwnedSlice(allocator) };
+    return .{ .dict = entries };
 }
 
 fn parseExpr(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Expr {
@@ -107,6 +110,99 @@ pub fn parse(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Exp
     const eos = try tokenizer.next();
     if (eos != .eof) return ParseError.MultipleRootValues;
     return expr;
+}
+
+const decodeError = error{ unexpectedType, missingField } || std.mem.Allocator.Error;
+fn bencodeWrapper(comptime T: type) type {
+    return struct { value: T };
+}
+
+pub fn toStruct(allocator: std.mem.Allocator, T: type, expr: *Expr) decodeError!bencodeWrapper(T) {
+    switch (expr.*) {
+        .int => |num| {
+            if (@typeInfo(T) == .int) {
+                return bencodeWrapper(T){ .value = @intCast(num) };
+            } else return error.unexpectedType;
+        },
+        .string => |str| {
+            switch (@typeInfo(T)) {
+                .pointer => |ptr| {
+                    if (ptr.child == u8 and ptr.size == .slice) {
+                        return bencodeWrapper(T){ .value = @constCast(str) };
+                    } else return error.unexpectedType;
+                },
+                else => return error.unexpectedType,
+            }
+        },
+        .list => |list| {
+            if (list.len == 0) return bencodeWrapper(T){ .value = undefined };
+
+            switch (@typeInfo(T)) {
+                .pointer => |ptr| {
+                    if (ptr.size != .slice) return error.unsupportedType;
+
+                    var items = try allocator.alloc(ptr.child, list.len);
+                    for (list, 0..) |*item, i| {
+                        const val = try toStruct(allocator, ptr.child, item);
+                        items[i] = val.value;
+                    }
+                    return bencodeWrapper(T){ .value = items };
+                },
+                else => return error.unexpectedType,
+            }
+        },
+        .dict => |dict| {
+            switch (@typeInfo(T)) {
+                .@"struct" => |s| {
+                    var result: T = undefined;
+
+                    inline for (s.field_types, s.field_names) |field_type, field_name| {
+                        var entry = dict.get(field_name) orelse return error.missingField;
+                        const value = try toStruct(allocator, field_type, &entry);
+                        @field(result, field_name) = value.value;
+                    }
+
+                    return bencodeWrapper(T){ .value = result };
+                },
+                else => return error.unexpectedType,
+            }
+        },
+    }
+}
+
+pub fn toString(allocator: std.mem.Allocator, input: Expr) ![]u8 {
+    var result: std.ArrayList(u8) = .empty;
+
+    switch (input) {
+        .int => |num| try result.print(allocator, "{d}", .{num}),
+        .string => |str| try result.print(allocator, "\"{s}\"", .{str}),
+        .list => |list| {
+            try result.print(allocator, "[ ", .{});
+            for (list, 0..) |item, i| {
+                if (i == 0) {
+                    try result.print(allocator, "{s}", .{try toString(allocator, item)});
+                } else {
+                    try result.print(allocator, ", {s}", .{try toString(allocator, item)});
+                }
+            }
+            try result.print(allocator, " ]", .{});
+        },
+        .dict => |dict| {
+            try result.print(allocator, "{{ ", .{});
+            var i = @as(usize, 0);
+            var iter = dict.iterator();
+            while (iter.next()) |entry| : (i += 1) {
+                if (i == 0) {
+                    try result.print(allocator, "\"{s}\": {s}", .{ entry.key_ptr.*, try toString(allocator, entry.value_ptr.*) });
+                } else {
+                    try result.print(allocator, ", \"{s}\": {s}", .{ entry.key_ptr.*, try toString(allocator, entry.value_ptr.*) });
+                }
+            }
+            try result.print(allocator, " }}", .{});
+        },
+    }
+
+    return result.toOwnedSlice(allocator);
 }
 
 const expectEqual = std.testing.expectEqual;
@@ -141,10 +237,13 @@ fn expectEqualExprs(left: Expr, right: Expr) !void {
         .dict => |left_dict| {
             switch (right) {
                 .dict => |right_dict| {
-                    try expectEqual(left_dict.len, right_dict.len);
-                    for (left_dict, right_dict) |left_entry, right_entry| {
-                        try expectEqualStrings(left_entry.key, right_entry.key);
-                        try expectEqualExprs(left_entry.val, right_entry.val);
+                    try expectEqual(left_dict.count(), right_dict.count());
+                    var left_iter = left_dict.iterator();
+                    var right_iter = right_dict.iterator();
+                    while (left_iter.next()) |left_entry| {
+                        const right_entry = right_iter.next().?;
+                        try expectEqualStrings(left_entry.key_ptr.*, right_entry.key_ptr.*);
+                        try expectEqualExprs(left_entry.value_ptr.*, right_entry.value_ptr.*);
                     }
                 },
                 else => @panic("not same type"),
@@ -190,18 +289,29 @@ test "Parses lists" {
     try expectError(ParseError.UnendedList, parse(allocator, &noEndEmbedded));
 }
 
+fn hashMapWith(allocator: std.mem.Allocator, entries: anytype) !Map {
+    var result = Map.init(allocator);
+    inline for (entries) |entry| {
+        const key, const value = entry;
+        try result.put(key, value);
+    }
+    return result;
+}
+
 test "Parse dict" {
     const allocator = std.testing.allocator;
     var tokens = Tokenizer.init("d3:vali32ee");
     var expr = try parse(allocator, &tokens);
     defer expr.deinit(allocator);
-    var entries = [_]DictEntry{DictEntry{ .key = "val", .val = .{ .int = 32 } }};
-    try expectEqualExprs(Expr{ .dict = &entries }, expr);
+    var entries = try hashMapWith(allocator, .{.{ "val", Expr{ .int = 32 } }});
+    defer entries.deinit();
+    try expectEqualExprs(Expr{ .dict = entries }, expr);
     var embeddedDict = Tokenizer.init("d4:dictd3:vali32eee");
-    var embeddedEntries = [_]DictEntry{.{ .key = "dict", .val = .{ .dict = &entries } }};
+    var embeddedEntries = try hashMapWith(allocator, .{.{ "dict", Expr{ .dict = entries } }});
+    defer embeddedEntries.deinit();
     var embeddedExpr = try parse(allocator, &embeddedDict);
     defer embeddedExpr.deinit(allocator);
-    try expectEqualExprs(Expr{ .dict = &embeddedEntries }, embeddedExpr);
+    try expectEqualExprs(Expr{ .dict = embeddedEntries }, embeddedExpr);
     var noEnd = Tokenizer.init("d4:word4:tell");
     try expectError(ParseError.UnendedDict, parse(allocator, &noEnd));
     var noEndEmbedded = Tokenizer.init("d4:dictd4:name3:bobe");
@@ -211,12 +321,13 @@ test "Parse dict" {
 test "Embedded complex expressions" {
     const allocator = std.testing.allocator;
     var list = [_]Expr{ .{ .int = 32 }, .{ .string = "owo" } };
-    var dictListExpr = [_]DictEntry{.{ .key = "list", .val = Expr{ .list = &list } }};
+    var dictListExpr = try hashMapWith(allocator, .{.{ "list", Expr{ .list = &list } }});
+    defer dictListExpr.deinit();
     var dictList = Tokenizer.init("d4:listli32e3:owoee");
     var expr = try parse(allocator, &dictList);
     defer expr.deinit(allocator);
-    try expectEqualExprs(Expr{ .dict = &dictListExpr }, expr);
-    var listDictExpr = [_]Expr{.{ .dict = &dictListExpr }};
+    try expectEqualExprs(Expr{ .dict = dictListExpr }, expr);
+    var listDictExpr = [_]Expr{.{ .dict = dictListExpr }};
     var listDict = Tokenizer.init("ld4:listli32e3:owoeee");
     var expr2 = try parse(allocator, &listDict);
     defer expr2.deinit(allocator);
