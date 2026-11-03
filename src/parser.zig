@@ -4,7 +4,6 @@ const Map = std.StringHashMap(Expr);
 const Tokenizer = @import("tokenizer.zig");
 const Token = Tokenizer.Token;
 
-// const DictEntry = struct { key: []const u8, val: Expr };
 pub const Expr = union(enum) {
     const Self = @This();
 
@@ -27,8 +26,43 @@ pub const Expr = union(enum) {
             else => {},
         }
     }
+
+    pub fn toString(self: *const Self, allocator: std.mem.Allocator) ![]u8 {
+        var result: std.ArrayList(u8) = .empty;
+
+        switch (self.*) {
+            .int => |num| try result.print(allocator, "{d}", .{num}),
+            .string => |str| try result.print(allocator, "\"{s}\"", .{str}),
+            .list => |list| {
+                try result.print(allocator, "[ ", .{});
+                for (list, 0..) |item, i| {
+                    if (i == 0) {
+                        try result.print(allocator, "{s}", .{try item.toString(allocator)});
+                    } else {
+                        try result.print(allocator, ", {s}", .{try item.toString(allocator)});
+                    }
+                }
+                try result.print(allocator, " ]", .{});
+            },
+            .dict => |dict| {
+                try result.print(allocator, "{{ ", .{});
+                var i = @as(usize, 0);
+                var iter = dict.iterator();
+                while (iter.next()) |entry| : (i += 1) {
+                    if (i == 0) {
+                        try result.print(allocator, "\"{s}\": {s}", .{ entry.key_ptr.*, try entry.value_ptr.toString(allocator) });
+                    } else {
+                        try result.print(allocator, ", \"{s}\": {s}", .{ entry.key_ptr.*, try entry.value_ptr.toString(allocator) });
+                    }
+                }
+                try result.print(allocator, " }}", .{});
+            },
+        }
+
+        return result.toOwnedSlice(allocator);
+    }
 };
-const ParseError = error{ NullRootValue, MultipleRootValues, InvalidToken, UnendedList, UnendedDict } || Tokenizer.TokenizerError || std.mem.Allocator.Error;
+pub const ParseError = error{ NullRootValue, MultipleRootValues, InvalidToken, UnendedList, UnendedDict } || Tokenizer.TokenizerError || std.mem.Allocator.Error;
 
 fn parseList(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Expr {
     var list: ArrayList(Expr) = .empty;
@@ -110,99 +144,6 @@ pub fn parse(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Exp
     const eos = try tokenizer.next();
     if (eos != .eof) return ParseError.MultipleRootValues;
     return expr;
-}
-
-const decodeError = error{ unexpectedType, missingField } || std.mem.Allocator.Error;
-fn bencodeWrapper(comptime T: type) type {
-    return struct { value: T };
-}
-
-pub fn toStruct(allocator: std.mem.Allocator, T: type, expr: *Expr) decodeError!bencodeWrapper(T) {
-    switch (expr.*) {
-        .int => |num| {
-            if (@typeInfo(T) == .int) {
-                return bencodeWrapper(T){ .value = @intCast(num) };
-            } else return error.unexpectedType;
-        },
-        .string => |str| {
-            switch (@typeInfo(T)) {
-                .pointer => |ptr| {
-                    if (ptr.child == u8 and ptr.size == .slice) {
-                        return bencodeWrapper(T){ .value = @constCast(str) };
-                    } else return error.unexpectedType;
-                },
-                else => return error.unexpectedType,
-            }
-        },
-        .list => |list| {
-            if (list.len == 0) return bencodeWrapper(T){ .value = undefined };
-
-            switch (@typeInfo(T)) {
-                .pointer => |ptr| {
-                    if (ptr.size != .slice) return error.unsupportedType;
-
-                    var items = try allocator.alloc(ptr.child, list.len);
-                    for (list, 0..) |*item, i| {
-                        const val = try toStruct(allocator, ptr.child, item);
-                        items[i] = val.value;
-                    }
-                    return bencodeWrapper(T){ .value = items };
-                },
-                else => return error.unexpectedType,
-            }
-        },
-        .dict => |dict| {
-            switch (@typeInfo(T)) {
-                .@"struct" => |s| {
-                    var result: T = undefined;
-
-                    inline for (s.field_types, s.field_names) |field_type, field_name| {
-                        var entry = dict.get(field_name) orelse return error.missingField;
-                        const value = try toStruct(allocator, field_type, &entry);
-                        @field(result, field_name) = value.value;
-                    }
-
-                    return bencodeWrapper(T){ .value = result };
-                },
-                else => return error.unexpectedType,
-            }
-        },
-    }
-}
-
-pub fn toString(allocator: std.mem.Allocator, input: Expr) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-
-    switch (input) {
-        .int => |num| try result.print(allocator, "{d}", .{num}),
-        .string => |str| try result.print(allocator, "\"{s}\"", .{str}),
-        .list => |list| {
-            try result.print(allocator, "[ ", .{});
-            for (list, 0..) |item, i| {
-                if (i == 0) {
-                    try result.print(allocator, "{s}", .{try toString(allocator, item)});
-                } else {
-                    try result.print(allocator, ", {s}", .{try toString(allocator, item)});
-                }
-            }
-            try result.print(allocator, " ]", .{});
-        },
-        .dict => |dict| {
-            try result.print(allocator, "{{ ", .{});
-            var i = @as(usize, 0);
-            var iter = dict.iterator();
-            while (iter.next()) |entry| : (i += 1) {
-                if (i == 0) {
-                    try result.print(allocator, "\"{s}\": {s}", .{ entry.key_ptr.*, try toString(allocator, entry.value_ptr.*) });
-                } else {
-                    try result.print(allocator, ", \"{s}\": {s}", .{ entry.key_ptr.*, try toString(allocator, entry.value_ptr.*) });
-                }
-            }
-            try result.print(allocator, " }}", .{});
-        },
-    }
-
-    return result.toOwnedSlice(allocator);
 }
 
 const expectEqual = std.testing.expectEqual;
