@@ -4,8 +4,10 @@ pub const Token = union(enum) { string: []const u8, int: i32, list_begin, dict_b
 
 pub const TokenizerError = error{ invalidType, zeroPrefixed, negativeZero, missingColonAfterStringLength, unexpectedEOF, unendedInt };
 
-const print = std.debug.print;
 const Self = @This();
+
+input: []const u8,
+index: usize,
 
 pub fn init(input: []const u8) Self {
     return .{ .input = input, .index = 0 };
@@ -82,6 +84,7 @@ pub fn next(self: *Self) TokenizerError!Token {
 }
 
 pub fn printTokens(tokens: []const Token) void {
+    const print = std.debug.print;
     for (tokens) |token| {
         switch (token) {
             .dict_begin => print("DICT_BEGIN\n", .{}),
@@ -111,9 +114,6 @@ fn expectError(comptime input: []const u8, output: TokenizerError) !void {
     var tokenizer: Self = .init(input);
     try std.testing.expectError(output, tokenizer.next());
 }
-
-input: []const u8,
-index: usize,
 
 test "Tokenizes single character tokens and empty input" {
     try expectTokenOutput("lde", &[_]Token{ .list_begin, .dict_begin, .end });

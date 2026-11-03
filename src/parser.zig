@@ -1,7 +1,7 @@
 const std = @import("std");
 const ArrayList = std.ArrayList;
 const Map = std.StringHashMap(Expr);
-const Tokenizer = @import("tokenizer.zig");
+const Tokenizer = @import("Tokenizer.zig");
 const Token = Tokenizer.Token;
 
 pub const Expr = union(enum) {
@@ -46,7 +46,7 @@ pub const Expr = union(enum) {
             },
             .dict => |dict| {
                 try result.print(allocator, "{{ ", .{});
-                var i = @as(usize, 0);
+                comptime var i = 0;
                 var iter = dict.iterator();
                 while (iter.next()) |entry| : (i += 1) {
                     if (i == 0) {

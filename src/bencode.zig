@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const Parser = @import("parser.zig");
-const Tokenizer = @import("tokenizer.zig");
+const Tokenizer = @import("Tokenizer.zig");
 
 pub const DecodeError = Parser.ParseError || decodeError;
 

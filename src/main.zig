@@ -4,7 +4,7 @@ const Io = std.Io;
 const bittorrent_zig = @import("bittorrent_zig");
 
 const Parser = @import("parser.zig");
-const Tokenizer = @import("tokenizer.zig");
+const Tokenizer = @import("Tokenizer.zig");
 const Bencode = @import("bencode.zig");
 
 const bla = struct { meaning: u8, wiki: []const u8, nums: []i32 };
