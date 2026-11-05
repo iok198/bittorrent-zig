@@ -7,8 +7,10 @@ const Parser = @import("parser.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const Bencode = @import("bencode.zig");
 
+// TODO: Add list of trackers
+
 const BitTorrent = struct { announce: []const u8, comment: []const u8, @"created by": ?[]const u8, @"creation date": i32, encoding: ?[]const u8, info: BitInfo };
-const BitInfo = struct { length: ?u32, name: []const u8, @"piece length": u32, pieces: []u8 };
+const BitInfo = struct { length: ?u32, name: []const u8, @"piece length": u32, pieces: []u8, path: ?[][]const u8 };
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -22,4 +24,5 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("piece length: {d}\n", .{torrent.info.@"piece length"});
     std.debug.print("name: {s}\n", .{torrent.info.name});
     std.debug.print("pieces length: {d}\n", .{torrent.info.pieces.len});
+    std.debug.print("path: {any}\n", .{torrent.info.path});
 }
