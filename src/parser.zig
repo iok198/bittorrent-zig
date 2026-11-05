@@ -46,7 +46,7 @@ pub const Expr = union(enum) {
             },
             .dict => |dict| {
                 try result.print(allocator, "{{ ", .{});
-                comptime var i = 0;
+                var i = @as(u32, 0);
                 var iter = dict.iterator();
                 while (iter.next()) |entry| : (i += 1) {
                     if (i == 0) {

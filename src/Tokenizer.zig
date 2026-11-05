@@ -1,13 +1,31 @@
 const std = @import("std");
 
-pub const Token = union(enum) { string: []const u8, int: i32, list_begin, dict_begin, end, eof };
+pub const Token = union(enum) {
+    string: []const u8,
+    int: i32,
+    list_begin,
+    dict_begin,
+    end,
+    eof,
+
+    pub fn printToken(self: *const Token) void {
+        switch (self.*) {
+            .dict_begin => std.debug.print("DICT_BEGIN\n", .{}),
+            .list_begin => std.debug.print("LIST_BEGIN\n", .{}),
+            .end => std.debug.print("END\n", .{}),
+            .int => |num| std.debug.print("INT: {d}\n", .{num}),
+            .string => |str| std.debug.print("STRING: {s}\n", .{str}),
+            .eof => std.debug.print("EOF\n", .{}),
+        }
+    }
+};
 
 pub const TokenizerError = error{ invalidType, zeroPrefixed, negativeZero, missingColonAfterStringLength, unexpectedEOF, unendedInt };
 
 const Self = @This();
 
 input: []const u8,
-index: usize,
+index: u32,
 
 pub fn init(input: []const u8) Self {
     return .{ .input = input, .index = 0 };
@@ -21,7 +39,7 @@ pub fn next(self: *Self) TokenizerError!Token {
             'l' => return .list_begin,
             'e' => return .end,
             'i' => {
-                var buf_len = @as(usize, 0);
+                var buf_len = @as(u32, 0);
                 var sign = @as(i32, 1);
                 var num = @as(i32, 0);
                 self.index += 1;
@@ -53,8 +71,8 @@ pub fn next(self: *Self) TokenizerError!Token {
                 return .{ .int = num * sign };
             },
             '0'...'9' => {
-                var buf_len = @as(usize, 0);
-                var str_len = self.input[self.index] - '0';
+                var buf_len = @as(u32, 0);
+                var str_len = @as(u32, self.input[self.index] - '0');
                 self.index += 1;
 
                 while (self.index + buf_len < self.input.len and self.input[self.index + buf_len] != ':') : (buf_len += 1) {

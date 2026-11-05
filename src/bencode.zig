@@ -23,14 +23,22 @@ fn toStruct(allocator: std.mem.Allocator, T: type, expr: *Parser.Expr) decodeErr
         .int => |num| {
             if (@typeInfo(T) == .int) {
                 return bencodeWrapper(T){ .value = @intCast(num) };
-            } else return error.unexpectedType;
+            } else {
+                if (@typeInfo(T) == .optional) {
+                    return bencodeWrapper(T){ .value = null };
+                } else return error.unexpectedType;
+            }
         },
         .string => |str| {
             switch (@typeInfo(T)) {
                 .pointer => |ptr| {
                     if (ptr.child == u8 and ptr.size == .slice) {
                         return bencodeWrapper(T){ .value = @constCast(str) };
-                    } else return error.unexpectedType;
+                    } else {
+                        if (@typeInfo(T) == .optional) {
+                            return bencodeWrapper(T){ .value = null };
+                        } else return error.unexpectedType;
+                    }
                 },
                 else => return error.unexpectedType,
             }
@@ -52,6 +60,7 @@ fn toStruct(allocator: std.mem.Allocator, T: type, expr: *Parser.Expr) decodeErr
                     }
                     return bencodeWrapper(T){ .value = items };
                 },
+                .optional => return bencodeWrapper(T){ .value = null },
                 else => return error.unexpectedType,
             }
         },
@@ -61,9 +70,16 @@ fn toStruct(allocator: std.mem.Allocator, T: type, expr: *Parser.Expr) decodeErr
                     var result: T = undefined;
 
                     inline for (s.field_types, s.field_names) |field_type, field_name| {
-                        var entry = dict.get(field_name) orelse return error.missingField;
-                        const value = try toStruct(allocator, field_type, &entry);
-                        @field(result, field_name) = value.value;
+                        if (dict.get(field_name)) |entry| {
+                            const value = try toStruct(allocator, field_type, @constCast(&entry));
+                            @field(result, field_name) = value.value;
+                        } else {
+                            if (@typeInfo(field_type) == .optional) {
+                                @field(result, field_name) = null;
+                            } else {
+                                return error.missingField;
+                            }
+                        }
                     }
 
                     return bencodeWrapper(T){ .value = result };
