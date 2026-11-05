@@ -101,19 +101,6 @@ pub fn next(self: *Self) TokenizerError!Token {
     return .eof;
 }
 
-pub fn printTokens(tokens: []const Token) void {
-    const print = std.debug.print;
-    for (tokens) |token| {
-        switch (token) {
-            .dict_begin => print("DICT_BEGIN\n", .{}),
-            .list_begin => print("LIST_BEGIN\n", .{}),
-            .end => print("END\n", .{}),
-            .int => |num| print("INT: {d}\n", .{num}),
-            .string => |str| print("STRING: {s}\n", .{str}),
-        }
-    }
-}
-
 fn expectTokenOutput(comptime input: []const u8, output: []const Token) !void {
     var tokenizer: Self = .init(input);
     var index = @as(usize, 0);
@@ -126,6 +113,7 @@ fn expectTokenOutput(comptime input: []const u8, output: []const Token) !void {
             try std.testing.expectEqual(expected, actual);
         }
     }
+    try std.testing.expectEqual(.eof, try tokenizer.next());
 }
 
 fn expectError(comptime input: []const u8, output: TokenizerError) !void {
