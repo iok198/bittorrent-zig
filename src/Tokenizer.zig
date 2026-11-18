@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub const Token = union(enum) {
     string: []const u8,
-    int: i32,
+    int: i64,
     list_begin,
     dict_begin,
     end,
@@ -47,9 +47,9 @@ pub fn next(self: *Self) TokenizerError!Token {
             'l' => return .list_begin,
             'e' => return .end,
             'i' => {
-                var buf_len = @as(u32, 0);
-                var sign = @as(i32, 1);
-                var num = @as(i32, 0);
+                var buf_len: u32 = 0;
+                var sign: i32 = 1;
+                var num: i64 = 0;
                 self.index += 1;
 
                 while (self.index + buf_len < self.input.len and self.input[self.index + buf_len] != 'e') : (buf_len += 1) {
