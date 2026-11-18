@@ -17,12 +17,12 @@ pub const Token = union(enum) {
             .int => |num| try result.print(allocator, "INT: {d}\n", .{num}),
             .string => |str| {
                 if (std.unicode.utf8ValidateSlice(str)) {
-                    try result.print(allocator, "STRING: \"{s}\"\n", .{str});
+                    try result.print(allocator, "\"{s}\"\n", .{str});
                 } else {
                     try result.print(allocator, "STRING: binary\n", .{});
                 }
             },
-            .eof => try result.print(allocator, "EOF\n", .{}),
+            .eof => {},
         }
         return result.toOwnedSlice(allocator);
     }
