@@ -13,6 +13,66 @@ pub fn decode(allocator: std.mem.Allocator, T: type, input: []const u8) DecodeEr
     return result.value;
 }
 
+fn lessThan(_: void, lhs: struct { []u8, []u8 }, rhs: struct { []u8, []u8 }) std.math.Order {
+    return std.mem.order(u8, lhs[0], rhs[0]);
+}
+
+pub fn encode(allocator: std.mem.Allocator, val: anytype) ![]u8 {
+    var result: std.ArrayList(u8) = .empty;
+    std.debug.print("val: {any}\n", .{val});
+
+    switch (@typeInfo(@TypeOf(val))) {
+        .optional => {
+            if (val) |v| {
+                const res = try encode(allocator, v);
+                defer allocator.free(res);
+                try result.print(allocator, "{s}", .{res});
+            }
+        },
+        .int => try result.print(allocator, "i{d}e", .{val}),
+        .pointer => |ptr| {
+            std.debug.print("got here: {any}\n", .{ptr});
+            if (ptr.size != .slice) return DecodeError.unexpectedType;
+            if (ptr.child == u8) {
+                try result.print(allocator, "{d}:{s}", .{ val.len, val });
+            } else {
+                try result.print(allocator, "l", .{});
+                for (val) |item| {
+                    const res = try encode(allocator, item);
+                    defer allocator.free(res);
+                    try result.print(allocator, "{s}", .{res});
+                }
+                try result.print(allocator, "e", .{});
+            }
+        },
+        .@"struct" => |s| {
+            try result.print(allocator, "d", .{});
+            var sorted_fields: std.PriorityQueue(struct { []u8, []u8 }, void, lessThan) = .initContext({});
+            defer sorted_fields.deinit(allocator);
+            inline for (s.field_names) |field_name| {
+                const res = try encode(allocator, @field(val, field_name));
+                defer allocator.free(res);
+                try sorted_fields.push(allocator, .{ @constCast(field_name), res });
+            }
+            var entryIter = sorted_fields.iterator();
+
+            while (entryIter.next()) |entry| {
+                const key, const v = entry;
+                const res = try encode(allocator, key);
+                defer allocator.free(res);
+                try result.print(allocator, "{s}{s}", .{ res, v });
+            }
+            try result.print(allocator, "e", .{});
+        },
+        else => |bad_field| {
+            std.debug.print("bad field: {any}\n", .{bad_field});
+            return error.unexpectedField;
+        },
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
 fn bencodeWrapper(comptime T: type) type {
     return struct { value: T };
 }
@@ -187,4 +247,14 @@ test "Test decode" {
     try expectError(DecodeError.missingField, decode(allocator, MysteriousPerson, "d8:realname5:bobbye"));
     try expectError(DecodeError.unexpectedType, decode(allocator, Person, "d4:name3:bob3:age6:secrete"));
     try expectError(DecodeError.unexpectedType, decode(allocator, *People, input));
+}
+
+test "Test encode" {
+    const allocator = std.testing.allocator;
+    const num = try encode(allocator, @as(i32, 32));
+    defer allocator.free(num);
+    try expectEqualStrings("i32e", num);
+    const str = try encode(allocator, "bob");
+    defer allocator.free(str);
+    try expectEqualStrings("3:bob", str);
 }

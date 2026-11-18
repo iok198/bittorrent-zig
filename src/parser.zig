@@ -8,7 +8,7 @@ pub const Expr = union(enum) {
     const Self = @This();
 
     string: []const u8,
-    int: i32,
+    int: i64,
     dict: Map,
     list: []Expr,
 
@@ -26,42 +26,50 @@ pub const Expr = union(enum) {
             else => {},
         }
     }
+    const entryType = std.StringHashMap(Expr).Entry;
+    fn sortEntry(_: void, left: entryType, right: entryType) std.math.Order {
+        return std.mem.order(u8, left.key_ptr.*, right.key_ptr.*);
+    }
 
-    pub fn toString(self: *const Self, allocator: std.mem.Allocator) ![]u8 {
+    pub fn toString(self: *const Self, allocator: std.mem.Allocator, newline: bool) ![]u8 {
         var result: std.ArrayList(u8) = .empty;
+        const nl = if (newline) "\n" else "";
 
         switch (self.*) {
-            .int => |num| try result.print(allocator, "{d}", .{num}),
+            .int => |num| try result.print(allocator, "{d}{s}", .{ num, nl }),
             .string => |str| {
                 if (std.unicode.utf8ValidateSlice(str)) {
-                    try result.print(allocator, "\"{s}\"", .{str});
+                    try result.print(allocator, "\"{s}\"{s}", .{ str, nl });
                 } else {
                     try result.print(allocator, "\"invalid UTF-8 string\"", .{});
                 }
             },
             .list => |list| {
-                try result.print(allocator, "[ ", .{});
+                try result.print(allocator, "[", .{});
                 for (list, 0..) |item, i| {
                     if (i == 0) {
-                        try result.print(allocator, "{s}", .{try item.toString(allocator)});
+                        try result.print(allocator, "{s}", .{try item.toString(allocator, false)});
                     } else {
-                        try result.print(allocator, ", {s}", .{try item.toString(allocator)});
+                        try result.print(allocator, ",{s}", .{try item.toString(allocator, false)});
                     }
                 }
-                try result.print(allocator, " ]", .{});
+                try result.print(allocator, "]{s}", .{nl});
             },
             .dict => |dict| {
-                try result.print(allocator, "{{ ", .{});
-                var i = @as(u32, 0);
-                var iter = dict.iterator();
-                while (iter.next()) |entry| : (i += 1) {
+                try result.print(allocator, "{{", .{});
+                var dictIter = dict.iterator();
+                var entries: std.PriorityQueue(entryType, void, sortEntry) = .initContext({});
+                while (dictIter.next()) |entry| try entries.push(allocator, entry);
+                var entryIter = entries.iterator();
+                var i: u32 = 0;
+                while (entryIter.next()) |entry| : (i += 1) {
                     if (i == 0) {
-                        try result.print(allocator, "\"{s}\": {s}", .{ entry.key_ptr.*, try entry.value_ptr.toString(allocator) });
+                        try result.print(allocator, "\"{s}\":{s}", .{ entry.key_ptr.*, try entry.value_ptr.toString(allocator, false) });
                     } else {
-                        try result.print(allocator, ", \"{s}\": {s}", .{ entry.key_ptr.*, try entry.value_ptr.toString(allocator) });
+                        try result.print(allocator, ",\"{s}\":{s}", .{ entry.key_ptr.*, try entry.value_ptr.toString(allocator, false) });
                     }
                 }
-                try result.print(allocator, " }}", .{});
+                try result.print(allocator, "}}{s}", .{nl});
             },
         }
 
@@ -125,7 +133,10 @@ fn parseDict(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Exp
                     return err;
                 };
             },
-            else => return ParseError.InvalidToken,
+            else => |bad_token| {
+                std.debug.print("bad token: {any}\n", .{bad_token});
+                return ParseError.InvalidToken;
+            },
         }
     } else |err| return err;
 
