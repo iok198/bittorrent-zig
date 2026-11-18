@@ -89,6 +89,80 @@ fn toStruct(allocator: std.mem.Allocator, T: type, expr: *Parser.Expr) DecodeErr
     }
 }
 
+pub fn printStruct(value: anytype, comptime tab: u8) void {
+    const tabs: [tab]u8 = @splat('\t');
+
+    switch (@typeInfo(@TypeOf(value))) {
+        .@"struct" => |@"struct"| {
+            inline for (@"struct".field_names, @"struct".field_types) |field_name, field_type| {
+                const val = @field(value, field_name);
+                state: switch (@typeInfo(field_type)) {
+                    .int => {
+                        std.debug.print("{s}{s}: {d}\n", .{ tabs, field_name, val });
+                    },
+                    .pointer => |ptr| {
+                        if (ptr.size != .slice) break;
+                        if (ptr.child == u8) {
+                            if (std.mem.eql(u8, "pieces", field_name)) {
+                                std.debug.print("{s}{s}: too long to show\n", .{ tabs, field_name });
+                            } else {
+                                std.debug.print("{s}{s}: \"{s}\"\n", .{ tabs, field_name, val });
+                            }
+                            break :state;
+                        }
+
+                        std.debug.print("{s}{s}: [", .{ tabs, field_name });
+                        defer std.debug.print("{s}: ]", .{tabs});
+
+                        for (val) |item| {
+                            printStruct(item, tab + 1);
+                        }
+                    },
+                    .@"struct" => {
+                        std.debug.print("{s}{s}:\n", .{ tabs, field_name });
+                        printStruct(val, tab + 1);
+                    },
+                    .optional => {
+                        if (val) |inner| {
+                            std.debug.print("{s}{s}: \n", .{ tabs, field_name });
+                            printStruct(inner, tab + 1);
+                        } else {
+                            std.debug.print("{s}{s}: X\n", .{ tabs, field_name });
+                        }
+                    },
+                    else => {
+                        std.debug.print("{s}{s}: {any}\n", .{ tabs, field_name, val });
+                    },
+                }
+            }
+        },
+        .optional => {
+            if (value) |inner| printStruct(inner, tab + 1);
+        },
+        .int => std.debug.print("{s}{d}\n", .{ tabs, value }),
+        .pointer => |ptr| {
+            if (ptr.size != .slice) return;
+            if (ptr.child == u8) {
+                std.debug.print("{s}\"{s}\"\n", .{ tabs, value });
+                return;
+            }
+
+            std.debug.print("{s}[\n", .{
+                tabs,
+            });
+            defer std.debug.print("{s}]\n", .{tabs});
+
+            for (value) |item| {
+                printStruct(item, tab + 1);
+            }
+        },
+        else => {
+            // std.debug.print("bad type: {any}\nval: {any}\n", .{ wa, @TypeOf(value) });
+            return;
+        },
+    }
+}
+
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const expectError = std.testing.expectError;

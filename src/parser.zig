@@ -32,7 +32,13 @@ pub const Expr = union(enum) {
 
         switch (self.*) {
             .int => |num| try result.print(allocator, "{d}", .{num}),
-            .string => |str| try result.print(allocator, "\"{s}\"", .{str}),
+            .string => |str| {
+                if (std.unicode.utf8ValidateSlice(str)) {
+                    try result.print(allocator, "\"{s}\"", .{str});
+                } else {
+                    try result.print(allocator, "\"invalid UTF-8 string\"", .{});
+                }
+            },
             .list => |list| {
                 try result.print(allocator, "[ ", .{});
                 for (list, 0..) |item, i| {

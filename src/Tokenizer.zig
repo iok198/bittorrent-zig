@@ -8,15 +8,23 @@ pub const Token = union(enum) {
     end,
     eof,
 
-    pub fn printToken(self: *const Token) void {
+    pub fn toString(self: *const Token, allocator: std.mem.Allocator) ![]u8 {
+        var result = std.ArrayList(u8).empty;
         switch (self.*) {
-            .dict_begin => std.debug.print("DICT_BEGIN\n", .{}),
-            .list_begin => std.debug.print("LIST_BEGIN\n", .{}),
-            .end => std.debug.print("END\n", .{}),
-            .int => |num| std.debug.print("INT: {d}\n", .{num}),
-            .string => |str| std.debug.print("STRING: {s}\n", .{str}),
-            .eof => std.debug.print("EOF\n", .{}),
+            .dict_begin => try result.print(allocator, "DICT_BEGIN\n", .{}),
+            .list_begin => try result.print(allocator, "LIST_BEGIN\n", .{}),
+            .end => try result.print(allocator, "END\n", .{}),
+            .int => |num| try result.print(allocator, "INT: {d}\n", .{num}),
+            .string => |str| {
+                if (std.unicode.utf8ValidateSlice(str)) {
+                    try result.print(allocator, "STRING: \"{s}\"\n", .{str});
+                } else {
+                    try result.print(allocator, "STRING: binary\n", .{});
+                }
+            },
+            .eof => try result.print(allocator, "EOF\n", .{}),
         }
+        return result.toOwnedSlice(allocator);
     }
 };
 
