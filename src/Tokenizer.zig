@@ -14,7 +14,7 @@ pub const Token = union(enum) {
             .dict_begin => try result.print(allocator, "DICT_BEGIN\n", .{}),
             .list_begin => try result.print(allocator, "LIST_BEGIN\n", .{}),
             .end => try result.print(allocator, "END\n", .{}),
-            .int => |num| try result.print(allocator, "INT: {d}\n", .{num}),
+            .int => |num| try result.print(allocator, "{d}\n", .{num}),
             .string => |str| {
                 if (std.unicode.utf8ValidateSlice(str)) {
                     try result.print(allocator, "\"{s}\"\n", .{str});
