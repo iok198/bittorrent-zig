@@ -1,44 +1,51 @@
 const std = @import("std");
+const Io = std.Io;
+
+const Parser = @import("parser.zig");
+const Tokenizer = @import("Tokenizer.zig");
+const Bencode = @import("bencode.zig");
+const Torrent = @import("Torrent.zig");
+
+const File = struct { path: [][]u8, length: u32 };
+const BitTorrent = struct { announce: []const u8, comment: []const u8, @"created by": ?[]const u8, @"creation date": i32, encoding: ?[]const u8, info: BitInfo, @"announce-list": ?[][][]u8 };
+const BitInfo = struct { length: ?u32, name: []const u8, @"piece length": u32, pieces: []u8, path: ?[][][]u8, files: ?[]File };
 
 pub fn main(init: std.process.Init) !void {
-    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    const arena = init.arena.allocator();
+    const io = init.io;
 
-    var stdout = std.Io.File.stdout().writer(init.io, &.{});
-    var stderr = std.Io.File.stderr().writer(init.io, &.{});
+    var argsIter = init.minimal.args.iterate();
+    _ = argsIter.next();
+    const command = argsIter.next() orelse return error.InvalidArgLength;
+    const eql = std.mem.eql;
 
-    if (args.len < 3) {
-        try stdout.interface.print("Usage: your_program.sh <command> <args>\n", .{});
-        std.process.exit(1);
-    }
+    const torrentFile = argsIter.next() orelse return error.InvalidArgLength;
+    const bencodeFile = try std.Io.Dir.cwd().readFileAlloc(io, torrentFile, arena, .unlimited);
+    const stdout = std.Io.File.stdout();
 
-    const command = args[1];
+    var tokenizer = Tokenizer.init(bencodeFile);
 
-    if (std.mem.eql(u8, command, "decode")) {
-        // You can use print statements as follows for debugging, they'll be visible when running tests.
-        try stderr.interface.print("Logs from your program will appear here\n", .{});
-
-        // TODO: Uncomment the code below to pass the first stage
-        //
-        // const encodedStr = args[2];
-        // const decodedStr = decodeBencode(encodedStr) catch {
-        //     try stderr.interface.print("Invalid encoded value\n", .{});
-        //     std.process.exit(1);
-        // };
-        // var stringify = std.json.Stringify{ .writer = &stdout.interface };
-        // try stringify.write(decodedStr);
-        // try stdout.interface.print("\n", .{});
-    }
-}
-
-fn decodeBencode(encodedValue: []const u8) ![]const u8 {
-    if (encodedValue[0] >= '0' and encodedValue[0] <= '9') {
-        const firstColon = std.mem.indexOf(u8, encodedValue, ":");
-        if (firstColon == null) {
-            return error.InvalidArgument;
-        }
-        return encodedValue[firstColon.? + 1 ..];
+    if (eql(u8, "tokenize", command)) {
+        while (tokenizer.next()) |token| {
+            try stdout.writeStreamingAll(io, try token.toString(arena));
+            if (token == .eof) break;
+        } else |err| return err;
+    } else if (eql(u8, "parse", command)) {
+        var parsed = try Parser.parse(arena, &tokenizer);
+        defer parsed.deinit(arena);
+        const stringified = try parsed.toString(arena);
+        defer arena.free(stringified);
+        try stdout.writeStreamingAll(io, stringified);
+    } else if (eql(u8, "decode", command)) {
+        const torrent = try Bencode.decode(arena, BitTorrent, bencodeFile);
+        std.debug.print("BitTorrent:\n", .{});
+        Bencode.printStruct(torrent, 1);
+    } else if (eql(u8, "torrent", command)) {
+        const torrent = try Torrent.BitTorrent.from(arena, bencodeFile);
+        std.debug.print("BitTorrent:\n", .{});
+        Bencode.printStruct(torrent, 1);
+        // std.debug.print("{any}", .{torrent});
     } else {
-        // Only strings are supported at the moment
-        std.process.exit(1);
+        return error.InvalidCommand;
     }
 }
