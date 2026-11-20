@@ -133,10 +133,7 @@ fn parseDict(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Exp
                     return err;
                 };
             },
-            else => |bad_token| {
-                std.debug.print("bad token: {any}\n", .{bad_token});
-                return ParseError.InvalidToken;
-            },
+            else => return ParseError.InvalidToken,
         }
     } else |err| return err;
 

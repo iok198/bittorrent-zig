@@ -10,13 +10,8 @@ const File = struct { path: ?[][]u8, length: u32 };
 const BitTorrent = struct {
     announce: []const u8,
     info: BitInfo,
-    // comment: []const u8,
-    // @"created by": ?[]const u8,
-    // @"creation date": i32,
-    // encoding: ?[]const u8,
-    // @"announce-list": ?[][][]u8
 };
-const BitInfo = struct { length: u32, name: []const u8, @"piece length": u32, pieces: []u8, path: ?[][][]u8, files: ?[]File };
+const BitInfo = struct { length: u32, name: []const u8, @"piece length": u32, pieces: []u8 };
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -41,19 +36,19 @@ pub fn main(init: std.process.Init) !void {
         const torrent = try Bencode.decode(arena, BitTorrent, bencodeFile);
         try stdout.interface.print("Tracker URL: {s}\n", .{torrent.announce});
         try stdout.interface.print("Length: {d}\n", .{torrent.info.length});
-        const wa = try Bencode.encode(arena, torrent.info);
-        var waTok = Tokenizer.init(wa);
-        const waPa = try Parser.parse(arena, &waTok);
-        std.debug.print("test: {s}\n", .{try waPa.toString(arena, true)});
+        const encoded_info = try Bencode.encode(arena, torrent.info);
         var hasher = std.crypto.hash.Sha1.init(.{});
-        // for (0..torrent.info.pieces.len / 20) |i| {
-        //     hasher.update(torrent.info.pieces[i * 20 ..][0..20]);
-        // }
-        hasher.update(torrent.info.pieces);
-        // hasher.update();
+        hasher.update(encoded_info);
         var hash_buffer: [20]u8 = undefined;
         hasher.final(&hash_buffer);
         try stdout.interface.print("Info Hash: {x}\n", .{hash_buffer});
+        try stdout.interface.print("Piece Length: {d}\n", .{torrent.info.@"piece length"});
+        try stdout.interface.print("Piece Hashes:\n", .{});
+        std.debug.assert(torrent.info.pieces.len % 20 == 0);
+        const pieceHashes: [][20]u8 = @ptrCast(torrent.info.pieces);
+        for (pieceHashes) |piece| {
+            try stdout.interface.print("{x}\n", .{piece});
+        }
     } else {
         return error.InvalidCommand;
     }
