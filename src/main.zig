@@ -12,6 +12,19 @@ const BitTorrent = struct {
     info: BitInfo,
 };
 const BitInfo = struct { length: u32, name: []const u8, @"piece length": u32, pieces: []u8 };
+const Tracker = struct {
+    info_hash: [20]u8,
+    peer_id: [20]u8,
+    port: u16,
+    uploaded: u32,
+    downloaded: u32,
+    left: u32,
+    compact: u8,
+};
+
+fn isUnreserved(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '-' or c == '.' or c == '_' or c == '~' or c == '&' or c == '=' or c == '/' or c == ':' or c == '?';
+}
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -49,6 +62,38 @@ pub fn main(init: std.process.Init) !void {
         for (pieceHashes) |piece| {
             try stdout.interface.print("{x}\n", .{piece});
         }
+    } else if (eql(u8, "peers", command)) {
+        const torrentFile = argsIter.next() orelse return error.InvalidArgLength;
+        const bencodeFile = try std.Io.Dir.cwd().readFileAlloc(io, torrentFile, arena, .unlimited);
+        const torrent = try Bencode.decode(arena, BitTorrent, bencodeFile);
+        var client = std.http.Client{ .allocator = arena, .io = io };
+        defer client.deinit();
+        var bodyWriter = std.Io.Writer.Allocating.init(arena);
+        defer bodyWriter.deinit();
+
+        const encoded_info = try Bencode.encode(arena, torrent.info);
+        var hasher = std.crypto.hash.Sha1.init(.{});
+        hasher.update(encoded_info);
+        var hash_buffer: [20]u8 = undefined;
+        hasher.final(&hash_buffer);
+        const peer_id: [20]u8 = "iok198______________".*;
+        const rawUrl = try arena.print(
+            \\{s}?peer_id={s}&left={d}&port=6881&downloaded=0&uploaded=0&compact=1&info_hash={s}
+        , .{ torrent.announce, peer_id, torrent.info.length, hash_buffer });
+        var urlWriter = std.Io.Writer.Allocating.init(arena);
+        defer urlWriter.deinit();
+        try std.Uri.Component.percentEncode(&urlWriter.writer, rawUrl, isUnreserved);
+
+        std.debug.print("url: {s}\n", .{urlWriter.written()});
+
+        _ = try client.fetch(.{
+            .location = .{ .url = urlWriter.written() },
+            .method = .GET,
+            .response_writer = &bodyWriter.writer,
+        });
+
+        // TODO: Parse response
+        try stdout.interface.print("{s}\n", .{bodyWriter.written()});
     } else {
         return error.InvalidCommand;
     }
