@@ -171,7 +171,7 @@ const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const expectError = std.testing.expectError;
 
-test "Test decode" {
+test decode {
     const allocator = std.testing.allocator;
     const Person = struct { name: []const u8, age: u8 };
     const People = struct { data: []Person };
@@ -193,7 +193,7 @@ test "Test decode" {
     try expectError(DecodeError.unexpectedType, decode(allocator, *People, input));
 }
 
-test "Test encode" {
+test encode {
     const allocator = std.testing.allocator;
     const num = try encode(allocator, @as(i32, 32));
     defer allocator.free(num);
