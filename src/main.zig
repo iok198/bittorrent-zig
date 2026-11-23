@@ -9,6 +9,7 @@ const Torrent = @import("Torrent.zig");
 const File = struct { path: ?[][]u8, length: u32 };
 const BitTorrent = struct {
     announce: []const u8,
+    @"announce-list": ?[][]const u8,
     info: BitInfo,
 };
 const BitInfo = struct { length: u32, name: []const u8, @"piece length": u32, pieces: []u8 };
@@ -21,6 +22,7 @@ const Tracker = struct {
     left: u32,
     compact: u8,
 };
+const TrackerResponse = struct { peers: []const u8, interval: u32 };
 
 fn isUnreserved(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '-' or c == '.' or c == '_' or c == '~' or c == '&' or c == '=' or c == '/' or c == ':' or c == '?';
@@ -76,24 +78,34 @@ pub fn main(init: std.process.Init) !void {
         hasher.update(encoded_info);
         var hash_buffer: [20]u8 = undefined;
         hasher.final(&hash_buffer);
+        var hash_writer = std.Io.Writer.Allocating.init(arena);
+        defer hash_writer.deinit();
+        try std.Uri.Component.percentEncode(&hash_writer.writer, &hash_buffer, isUnreserved);
         const peer_id: [20]u8 = "iok198______________".*;
-        const rawUrl = try arena.print(
+        const url = try arena.print(
             \\{s}?peer_id={s}&left={d}&port=6881&downloaded=0&uploaded=0&compact=1&info_hash={s}
-        , .{ torrent.announce, peer_id, torrent.info.length, hash_buffer });
-        var urlWriter = std.Io.Writer.Allocating.init(arena);
-        defer urlWriter.deinit();
-        try std.Uri.Component.percentEncode(&urlWriter.writer, rawUrl, isUnreserved);
-
-        std.debug.print("url: {s}\n", .{urlWriter.written()});
+        , .{ torrent.announce, peer_id, torrent.info.length, hash_writer.written() });
 
         _ = try client.fetch(.{
-            .location = .{ .url = urlWriter.written() },
+            .location = .{ .url = url },
             .method = .GET,
             .response_writer = &bodyWriter.writer,
         });
 
-        // TODO: Parse response
-        try stdout.interface.print("{s}\n", .{bodyWriter.written()});
+        const resp = try Bencode.decode(arena, TrackerResponse, bodyWriter.written());
+        std.debug.assert(resp.peers.len % 6 == 0);
+        const peers: []const [6]u8 = @ptrCast(resp.peers);
+        for (peers) |peer| {
+            const port = std.mem.readInt(u16, &[2]u8{ peer[4], peer[5] }, .big);
+            try stdout.interface.print("{d}.{d}.{d}.{d}:{d}\n", .{ peer[0], peer[1], peer[2], peer[3], port });
+        }
+    } else if (eql(u8, "bencode", command)) {
+        const torrentFile = argsIter.next() orelse return error.InvalidArgLength;
+        const bencodeFile = try std.Io.Dir.cwd().readFileAlloc(io, torrentFile, arena, .unlimited);
+        var tokenizer = Tokenizer.init(bencodeFile);
+        var parsed = try Parser.parse(arena, &tokenizer);
+        defer parsed.deinit(arena);
+        std.debug.print("{s}\n", .{try parsed.toString(arena, true)});
     } else {
         return error.InvalidCommand;
     }

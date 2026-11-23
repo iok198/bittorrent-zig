@@ -55,8 +55,11 @@ pub fn encode(allocator: std.mem.Allocator, val: anytype) ![]u8 {
                 }
                 sorted_fields.deinit(allocator);
             }
-            inline for (s.field_names) |field_name| {
-                const encoded_val = try encode(allocator, @field(val, field_name));
+            inline for (s.field_names, s.field_types) |field_name, field_type| {
+                const encoded_val = encode(allocator, @field(val, field_name)) catch |err| {
+                    if (@typeInfo(field_type) == .optional) continue;
+                    return err;
+                };
                 try sorted_fields.push(allocator, .{ .key = @constCast(field_name), .val = encoded_val });
             }
             var entryIter = sorted_fields.iterator();

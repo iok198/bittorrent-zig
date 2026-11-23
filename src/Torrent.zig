@@ -28,8 +28,15 @@ pub const BitTorrent = struct {
         const contents: BitInfoContents = i: {
             if (torrent.info.length) |length| {
                 if (torrent.info.files) |_| return error.InvalidStructure;
-                const path = torrent.info.path orelse return error.MissingPath;
-                break :i .{ .single_file = .{ .length = length, .path = path[0] } };
+                const path = p: {
+                    if (torrent.info.path) |path| {
+                        break :p path[0];
+                    } else {
+                        const wa: [][]u8 = @constCast(&[_][]u8{@constCast(torrent.info.name)});
+                        break :p wa;
+                    }
+                };
+                break :i .{ .single_file = .{ .length = length, .path = path } };
             }
 
             if (torrent.info.files) |files| {
