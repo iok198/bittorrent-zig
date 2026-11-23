@@ -11,17 +11,18 @@ const BitTorrent = struct {
     announce: []const u8,
     @"announce-list": ?[][]const u8,
     info: BitInfo,
+
+    pub fn hash(self: *const @This(), allocator: std.mem.Allocator) ![20]u8 {
+        const encoded_info = try Bencode.encode(allocator, self.info);
+        defer allocator.free(encoded_info);
+        var hasher = std.crypto.hash.Sha1.init(.{});
+        hasher.update(encoded_info);
+        var hash_buffer: [20]u8 = undefined;
+        hasher.final(&hash_buffer);
+        return hash_buffer;
+    }
 };
 const BitInfo = struct { length: u32, name: []const u8, @"piece length": u32, pieces: []u8 };
-const Tracker = struct {
-    info_hash: [20]u8,
-    peer_id: [20]u8,
-    port: u16,
-    uploaded: u32,
-    downloaded: u32,
-    left: u32,
-    compact: u8,
-};
 const TrackerResponse = struct { peers: []const u8, interval: u32 };
 
 fn isUnreserved(c: u8) bool {
@@ -51,12 +52,7 @@ pub fn main(init: std.process.Init) !void {
         const torrent = try Bencode.decode(arena, BitTorrent, bencodeFile);
         try stdout.interface.print("Tracker URL: {s}\n", .{torrent.announce});
         try stdout.interface.print("Length: {d}\n", .{torrent.info.length});
-        const encoded_info = try Bencode.encode(arena, torrent.info);
-        var hasher = std.crypto.hash.Sha1.init(.{});
-        hasher.update(encoded_info);
-        var hash_buffer: [20]u8 = undefined;
-        hasher.final(&hash_buffer);
-        try stdout.interface.print("Info Hash: {x}\n", .{hash_buffer});
+        try stdout.interface.print("Info Hash: {x}\n", .{try torrent.hash(arena)});
         try stdout.interface.print("Piece Length: {d}\n", .{torrent.info.@"piece length"});
         try stdout.interface.print("Piece Hashes:\n", .{});
         std.debug.assert(torrent.info.pieces.len % 20 == 0);
@@ -73,14 +69,10 @@ pub fn main(init: std.process.Init) !void {
         var bodyWriter = std.Io.Writer.Allocating.init(arena);
         defer bodyWriter.deinit();
 
-        const encoded_info = try Bencode.encode(arena, torrent.info);
-        var hasher = std.crypto.hash.Sha1.init(.{});
-        hasher.update(encoded_info);
-        var hash_buffer: [20]u8 = undefined;
-        hasher.final(&hash_buffer);
+        const hash = try torrent.hash(arena);
         var hash_writer = std.Io.Writer.Allocating.init(arena);
         defer hash_writer.deinit();
-        try std.Uri.Component.percentEncode(&hash_writer.writer, &hash_buffer, isUnreserved);
+        try std.Uri.Component.percentEncode(&hash_writer.writer, &hash, isUnreserved);
         const peer_id: [20]u8 = "iok198______________".*;
         const url = try arena.print(
             \\{s}?peer_id={s}&left={d}&port=6881&downloaded=0&uploaded=0&compact=1&info_hash={s}
