@@ -30,7 +30,7 @@ fn isUnreserved(c: u8) bool {
 }
 
 pub fn main(init: std.process.Init) !void {
-    const arena = init.arena.allocator();
+    const allocator = init.arena.allocator();
     const io = init.io;
 
     var argsIter = init.minimal.args.iterate();
@@ -43,16 +43,16 @@ pub fn main(init: std.process.Init) !void {
     if (eql(u8, "decode", command)) {
         const input = argsIter.next() orelse return error.InvalidArgLength;
         var tokenizer = Tokenizer.init(input);
-        var parsed = try Parser.parse(arena, &tokenizer);
-        defer parsed.deinit(arena);
-        try stdout.interface.print("{s}", .{try parsed.toString(arena, true)});
+        var parsed = try Parser.parse(allocator, &tokenizer);
+        defer parsed.deinit(allocator);
+        try stdout.interface.print("{s}", .{try parsed.toString(allocator, true)});
     } else if (eql(u8, "info", command)) {
         const torrentFile = argsIter.next() orelse return error.InvalidArgLength;
-        const bencodeFile = try std.Io.Dir.cwd().readFileAlloc(io, torrentFile, arena, .unlimited);
-        const torrent = try Bencode.decode(arena, BitTorrent, bencodeFile);
+        const bencodeFile = try std.Io.Dir.cwd().readFileAlloc(io, torrentFile, allocator, .unlimited);
+        const torrent = try Bencode.decode(allocator, BitTorrent, bencodeFile);
         try stdout.interface.print("Tracker URL: {s}\n", .{torrent.announce});
         try stdout.interface.print("Length: {d}\n", .{torrent.info.length});
-        try stdout.interface.print("Info Hash: {x}\n", .{try torrent.hash(arena)});
+        try stdout.interface.print("Info Hash: {x}\n", .{try torrent.hash(allocator)});
         try stdout.interface.print("Piece Length: {d}\n", .{torrent.info.@"piece length"});
         try stdout.interface.print("Piece Hashes:\n", .{});
         std.debug.assert(torrent.info.pieces.len % 20 == 0);
@@ -62,19 +62,19 @@ pub fn main(init: std.process.Init) !void {
         }
     } else if (eql(u8, "peers", command)) {
         const torrentFile = argsIter.next() orelse return error.InvalidArgLength;
-        const bencodeFile = try std.Io.Dir.cwd().readFileAlloc(io, torrentFile, arena, .unlimited);
-        const torrent = try Bencode.decode(arena, BitTorrent, bencodeFile);
-        var client = std.http.Client{ .allocator = arena, .io = io };
+        const bencodeFile = try std.Io.Dir.cwd().readFileAlloc(io, torrentFile, allocator, .unlimited);
+        const torrent = try Bencode.decode(allocator, BitTorrent, bencodeFile);
+        var client = std.http.Client{ .allocator = allocator, .io = io };
         defer client.deinit();
-        var bodyWriter = std.Io.Writer.Allocating.init(arena);
+        var bodyWriter = std.Io.Writer.Allocating.init(allocator);
         defer bodyWriter.deinit();
 
-        const hash = try torrent.hash(arena);
-        var hash_writer = std.Io.Writer.Allocating.init(arena);
+        const hash = try torrent.hash(allocator);
+        var hash_writer = std.Io.Writer.Allocating.init(allocator);
         defer hash_writer.deinit();
         try std.Uri.Component.percentEncode(&hash_writer.writer, &hash, isUnreserved);
         const peer_id: [20]u8 = "iok198______________".*;
-        const url = try arena.print(
+        const url = try allocator.print(
             \\{s}?peer_id={s}&left={d}&port=6881&downloaded=0&uploaded=0&compact=1&info_hash={s}
         , .{ torrent.announce, peer_id, torrent.info.length, hash_writer.written() });
 
@@ -84,7 +84,7 @@ pub fn main(init: std.process.Init) !void {
             .response_writer = &bodyWriter.writer,
         });
 
-        const resp = try Bencode.decode(arena, TrackerResponse, bodyWriter.written());
+        const resp = try Bencode.decode(allocator, TrackerResponse, bodyWriter.written());
         std.debug.assert(resp.peers.len % 6 == 0);
         const peers: []const [6]u8 = @ptrCast(resp.peers);
         for (peers) |peer| {
@@ -93,11 +93,28 @@ pub fn main(init: std.process.Init) !void {
         }
     } else if (eql(u8, "bencode", command)) {
         const torrentFile = argsIter.next() orelse return error.InvalidArgLength;
-        const bencodeFile = try std.Io.Dir.cwd().readFileAlloc(io, torrentFile, arena, .unlimited);
+        const bencodeFile = try std.Io.Dir.cwd().readFileAlloc(io, torrentFile, allocator, .unlimited);
         var tokenizer = Tokenizer.init(bencodeFile);
-        var parsed = try Parser.parse(arena, &tokenizer);
-        defer parsed.deinit(arena);
-        std.debug.print("{s}\n", .{try parsed.toString(arena, true)});
+        var parsed = try Parser.parse(allocator, &tokenizer);
+        defer parsed.deinit(allocator);
+        std.debug.print("{s}\n", .{try parsed.toString(allocator, true)});
+    } else if (eql(u8, "handshake", command)) {
+        const torrentFile = argsIter.next() orelse return error.InvalidArgLength;
+        const url = argsIter.next() orelse return error.InvalidArgLength;
+
+        const bencodeFile = try std.Io.Dir.cwd().readFileAlloc(io, torrentFile, allocator, .unlimited);
+        const torrent = try Bencode.decode(allocator, BitTorrent, bencodeFile);
+
+        const address = try std.Io.net.IpAddress.parseLiteral(url);
+        const stream = try address.connect(io, .{ .mode = .stream });
+        defer stream.close(io);
+        const reserved: [8]u8 = @splat(0);
+        const payload = try allocator.print("{u}BitTorrent protocol{s}{s}{s}", .{ 19, reserved, try torrent.hash(allocator), "01234567890123456789" });
+
+        var buffer: [68]u8 = undefined;
+        try stream.socket.send(io, &address, payload);
+        const response = try stream.socket.receive(io, &buffer);
+        try stdout.interface.print("Peer ID: {x}\n", .{response.data[48..]});
     } else {
         return error.InvalidCommand;
     }
