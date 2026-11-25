@@ -1,130 +1,81 @@
 const std = @import("std");
 const Bencode = @import("bencode.zig");
-
-const File = struct {
-    /// A list of UTF-8 encoded strings corresponding to subdirectory names,
-    /// the last of which is the actual file name (a zero length list is an
-    /// error case).
-    path: [][]u8,
-    /// The length of the file, in bytes
-    length: u32,
-};
+const IpAddress = std.Io.net.IpAddress;
 
 pub const BitTorrent = struct {
     const Self = @This();
 
-    /// The URL of the tracker.
     announce: []const u8,
     info: BitInfo,
-    // optional
-    comment: ?[]const u8,
-    @"created by": ?[]const u8,
-    @"creation date": ?i32,
-    encoding: ?[]const u8,
-    @"announce-list": ?[][][]u8,
 
-    pub fn from(allocator: std.mem.Allocator, bencode: []const u8) !Self {
-        const torrent = try Bencode.decode(allocator, BitTorrentSerialized, bencode);
-        const contents: BitInfoContents = i: {
-            if (torrent.info.length) |length| {
-                if (torrent.info.files) |_| return error.InvalidStructure;
-                const path = p: {
-                    if (torrent.info.path) |path| {
-                        break :p path[0];
-                    } else {
-                        const wa: [][]u8 = @constCast(&[_][]u8{@constCast(torrent.info.name)});
-                        break :p wa;
-                    }
-                };
-                break :i .{ .single_file = .{ .length = length, .path = path } };
-            }
+    pub fn readFile(allocator: std.mem.Allocator, io: std.Io, file: []const u8) !Self {
+        const bencodeFile = try std.Io.Dir.cwd().readFileAlloc(io, file, allocator, .unlimited);
+        const torrent = try Bencode.decode(allocator, BitTorrent, bencodeFile);
 
-            if (torrent.info.files) |files| {
-                if (torrent.info.length) |_| return error.InvalidStructure;
-                break :i .{ .directory = files };
-            }
+        if (torrent.info.pieces.len % 20 != 0) return error.invalidPieces;
+        return torrent;
+    }
 
-            return error.InvalidStructure;
-        };
+    pub fn pieces(self: *const Self) []const [20]u8 {
+        const pieceHashes: []const [20]u8 = @ptrCast(self.info.pieces);
+        return pieceHashes;
+    }
 
-        const pieces = p: {
-            const pieces = torrent.info.pieces;
-            if (pieces.len % 20 != 0) return error.InvalidHashes;
-            const buffer: [][20]u8 = @ptrCast(pieces);
-            break :p buffer;
-        };
+    pub fn infoHash(self: *const Self, allocator: std.mem.Allocator) ![20]u8 {
+        var writer = std.Io.Writer.Allocating.init(allocator);
+        defer writer.deinit();
+        try Bencode.encode(&writer.writer, self.info);
+        try writer.writer.flush();
+        var hasher = std.crypto.hash.Sha1.init(.{});
+        hasher.update(writer.written());
+        var hash_buffer: [20]u8 = undefined;
+        hasher.final(&hash_buffer);
+        return hash_buffer;
+    }
 
-        return .{ .announce = torrent.announce, .info = .{ .pieces = pieces, .contents = contents, .@"piece length" = torrent.info.@"piece length", .path = torrent.info.path }, .comment = torrent.comment, .@"created by" = torrent.@"created by", .@"creation date" = torrent.@"creation date", .encoding = torrent.encoding, .@"announce-list" = torrent.@"announce-list" };
+    pub fn getPeers(self: *const Self, allocator: std.mem.Allocator, io: std.Io) !TrackerResponse {
+        var client = std.http.Client{ .allocator = allocator, .io = io };
+        defer client.deinit();
+        var bodyWriter = std.Io.Writer.Allocating.init(allocator);
+        defer bodyWriter.deinit();
+
+        const hash = try self.infoHash(allocator);
+        var hash_writer = std.Io.Writer.Allocating.init(allocator);
+        defer hash_writer.deinit();
+        try std.Uri.Component.percentEncode(&hash_writer.writer, &hash, isUnreserved);
+        const peer_id: [20]u8 = "iok198______________".*;
+        const url = try allocator.print(
+            \\{s}?peer_id={s}&left={d}&port=6881&downloaded=0&uploaded=0&compact=1&info_hash={s}
+        , .{ self.announce, peer_id, self.info.length, hash_writer.written() });
+
+        _ = try client.fetch(.{
+            .location = .{ .url = url },
+            .method = .GET,
+            .response_writer = &bodyWriter.writer,
+        });
+
+        const resp = try Bencode.decode(allocator, struct { peers: []const u8, interval: u32 }, bodyWriter.written());
+        if (resp.peers.len % 6 != 0) return error.BadPeersLength;
+
+        const peers: []const [6]u8 = @ptrCast(resp.peers);
+        var peers_list: []IpAddress = try allocator.alloc(IpAddress, peers.len);
+
+        for (peers, 0..) |peer, i| {
+            const port = std.mem.readInt(u16, &[2]u8{ peer[4], peer[5] }, .big);
+            const bytes: [4]u8 = @constCast(peer[0..4]).*;
+            const address = IpAddress{ .ip4 = .{ .bytes = bytes, .port = port } };
+            peers_list[i] = address;
+        }
+
+        return .{ .peers = peers_list, .interval = resp.interval };
     }
 };
+pub const BitInfo = struct { length: u32, name: []const u8, @"piece length": u32, pieces: []const u8 };
+pub const TrackerResponse = struct { peers: []IpAddress, interval: u32 };
 
-const BitTorrentSerialized = struct {
-    /// The URL of the tracker.
-    announce: []const u8,
-    info: BitInfoSerialized,
-    // optional
-    comment: ?[]const u8,
-    @"created by": ?[]const u8,
-    @"creation date": ?i32,
-    encoding: ?[]const u8,
-    @"announce-list": ?[][][]u8,
-};
-
-const BitInfoContents = union(enum) { single_file: File, directory: []File };
-const BitInfo = struct {
-    contents: BitInfoContents,
-    /// A string whose length is a multiple of 20. It is to be subdivided into
-    /// strings of length 20, each of which is the SHA1 hash of the piece at
-    /// the corresponding index.
-    pieces: [][20]u8,
-    /// The number of bytes in each piece the file is split into. For the
-    /// purposes of transfer, files are split into fixed-size pieces which are
-    /// all the same length except for possibly the last one which may be
-    /// truncated
-    @"piece length": u32,
-    /// A list of UTF-8 encoded strings corresponding to subdirectory names,
-    /// the last of which is the actual file name (a zero length list is an
-    /// error case).
-    path: ?[][][]u8,
-};
-
-const BitInfoSerialized = struct {
-    length: ?u32,
-    name: []const u8,
-    @"piece length": u32,
-    pieces: []u8,
-    path: ?[][][]u8,
-    files: ?[]File,
-};
-
-const Tracker = struct {
-    /// The 20 byte sha1 hash of the bencoded form of the info value from the
-    /// metainfo file. This value will almost certainly have to be escaped.
-    info_hash: [20]u8,
-    /// A string of length 20 which this downloader uses as its id. Each
-    /// downloader generates its own id at random at the start of a new
-    /// download. This value will also almost certainly have to be escaped.
-    peer_id: [20]u8,
-    /// An optional parameter giving the IP (or dns name) which this peer is
-    /// at. Generally used for the origin if it's on the same machine as the
-    /// tracker.
-    ip: ?[]const u8,
-    /// The port number this peer is listening on. Common behavior is for a
-    /// downloader to try to listen on port 6881 and if that port is taken try
-    /// 6882, then 6883, etc. and give up after 6889.
-    port: u16,
-    /// The total amount uploaded so far, encoded in base ten ascii
-    uploaded: u32,
-    /// The total amount downloaded so far, encoded in base ten ascii.
-    downloaded: u32,
-    /// The number of bytes this peer still has to download, encoded in base
-    /// ten ascii
-    left: u32,
-    /// This is an optional key which maps to started, completed, or stopped
-    /// (or empty, which is the same as not being present). If not present,
-    /// this is one of the announcements done at regular intervals.
-    event: ?[]const u8,
-};
+fn isUnreserved(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '-' or c == '.' or c == '_' or c == '~' or c == '&' or c == '=' or c == '/' or c == ':' or c == '?';
+}
 
 const PeerMessage = union(enum) {
     choke,

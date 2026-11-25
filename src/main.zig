@@ -4,30 +4,7 @@ const Io = std.Io;
 const Parser = @import("parser.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const Bencode = @import("bencode.zig");
-const Torrent = @import("Torrent.zig");
-
-const File = struct { path: ?[][]u8, length: u32 };
-const BitTorrent = struct {
-    announce: []const u8,
-    @"announce-list": ?[][]const u8,
-    info: BitInfo,
-
-    pub fn hash(self: *const @This(), allocator: std.mem.Allocator) ![20]u8 {
-        const encoded_info = try Bencode.encode(allocator, self.info);
-        defer allocator.free(encoded_info);
-        var hasher = std.crypto.hash.Sha1.init(.{});
-        hasher.update(encoded_info);
-        var hash_buffer: [20]u8 = undefined;
-        hasher.final(&hash_buffer);
-        return hash_buffer;
-    }
-};
-const BitInfo = struct { length: u32, name: []const u8, @"piece length": u32, pieces: []u8 };
-const TrackerResponse = struct { peers: []const u8, interval: u32 };
-
-fn isUnreserved(c: u8) bool {
-    return std.ascii.isAlphanumeric(c) or c == '-' or c == '.' or c == '_' or c == '~' or c == '&' or c == '=' or c == '/' or c == ':' or c == '?';
-}
+const BitTorrent = @import("Torrent.zig").BitTorrent;
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
@@ -48,48 +25,21 @@ pub fn main(init: std.process.Init) !void {
         try stdout.interface.print("{s}", .{try parsed.toString(allocator, true)});
     } else if (eql(u8, "info", command)) {
         const torrentFile = argsIter.next() orelse return error.InvalidArgLength;
-        const bencodeFile = try std.Io.Dir.cwd().readFileAlloc(io, torrentFile, allocator, .unlimited);
-        const torrent = try Bencode.decode(allocator, BitTorrent, bencodeFile);
+        const torrent = try BitTorrent.readFile(allocator, io, torrentFile);
         try stdout.interface.print("Tracker URL: {s}\n", .{torrent.announce});
         try stdout.interface.print("Length: {d}\n", .{torrent.info.length});
-        try stdout.interface.print("Info Hash: {x}\n", .{try torrent.hash(allocator)});
+        try stdout.interface.print("Info Hash: {x}\n", .{try torrent.infoHash(allocator)});
         try stdout.interface.print("Piece Length: {d}\n", .{torrent.info.@"piece length"});
         try stdout.interface.print("Piece Hashes:\n", .{});
-        std.debug.assert(torrent.info.pieces.len % 20 == 0);
-        const pieceHashes: [][20]u8 = @ptrCast(torrent.info.pieces);
-        for (pieceHashes) |piece| {
+        for (torrent.pieces()) |piece| {
             try stdout.interface.print("{x}\n", .{piece});
         }
     } else if (eql(u8, "peers", command)) {
         const torrentFile = argsIter.next() orelse return error.InvalidArgLength;
-        const bencodeFile = try std.Io.Dir.cwd().readFileAlloc(io, torrentFile, allocator, .unlimited);
-        const torrent = try Bencode.decode(allocator, BitTorrent, bencodeFile);
-        var client = std.http.Client{ .allocator = allocator, .io = io };
-        defer client.deinit();
-        var bodyWriter = std.Io.Writer.Allocating.init(allocator);
-        defer bodyWriter.deinit();
-
-        const hash = try torrent.hash(allocator);
-        var hash_writer = std.Io.Writer.Allocating.init(allocator);
-        defer hash_writer.deinit();
-        try std.Uri.Component.percentEncode(&hash_writer.writer, &hash, isUnreserved);
-        const peer_id: [20]u8 = "iok198______________".*;
-        const url = try allocator.print(
-            \\{s}?peer_id={s}&left={d}&port=6881&downloaded=0&uploaded=0&compact=1&info_hash={s}
-        , .{ torrent.announce, peer_id, torrent.info.length, hash_writer.written() });
-
-        _ = try client.fetch(.{
-            .location = .{ .url = url },
-            .method = .GET,
-            .response_writer = &bodyWriter.writer,
-        });
-
-        const resp = try Bencode.decode(allocator, TrackerResponse, bodyWriter.written());
-        std.debug.assert(resp.peers.len % 6 == 0);
-        const peers: []const [6]u8 = @ptrCast(resp.peers);
-        for (peers) |peer| {
-            const port = std.mem.readInt(u16, &[2]u8{ peer[4], peer[5] }, .big);
-            try stdout.interface.print("{d}.{d}.{d}.{d}:{d}\n", .{ peer[0], peer[1], peer[2], peer[3], port });
+        const torrent = try BitTorrent.readFile(allocator, io, torrentFile);
+        const resp = try torrent.getPeers(allocator, io);
+        for (resp.peers) |peer| {
+            try stdout.interface.print("{f}\n", .{peer});
         }
     } else if (eql(u8, "bencode", command)) {
         const torrentFile = argsIter.next() orelse return error.InvalidArgLength;
@@ -101,18 +51,17 @@ pub fn main(init: std.process.Init) !void {
     } else if (eql(u8, "handshake", command)) {
         const torrentFile = argsIter.next() orelse return error.InvalidArgLength;
         const url = argsIter.next() orelse return error.InvalidArgLength;
-
-        const bencodeFile = try std.Io.Dir.cwd().readFileAlloc(io, torrentFile, allocator, .unlimited);
-        const torrent = try Bencode.decode(allocator, BitTorrent, bencodeFile);
+        const torrent = try BitTorrent.readFile(allocator, io, torrentFile);
 
         const address = try std.Io.net.IpAddress.parseLiteral(url);
         const stream = try address.connect(io, .{ .mode = .stream });
         defer stream.close(io);
-        const reserved: [8]u8 = @splat(0);
-        const payload = try allocator.print("{u}BitTorrent protocol{s}{s}{s}", .{ 19, reserved, try torrent.hash(allocator), "01234567890123456789" });
+        var payload: [68]u8 = undefined;
+        var payload_writer = std.Io.Writer.fixed(&payload);
+        try payload_writer.print("{u}BitTorrent protocol{s}{s}{s}", .{ 19, @as([8]u8, @splat(0)), try torrent.infoHash(allocator), "01234567890123456789" });
 
         var buffer: [68]u8 = undefined;
-        try stream.socket.send(io, &address, payload);
+        try stream.socket.send(io, &address, &payload);
         const response = try stream.socket.receive(io, &buffer);
         try stdout.interface.print("Peer ID: {x}\n", .{response.data[48..]});
     } else {

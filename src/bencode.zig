@@ -13,85 +13,66 @@ pub fn decode(allocator: std.mem.Allocator, T: type, input: []const u8) DecodeEr
     return result.value;
 }
 
-const Entry = struct { key: []u8, val: []u8 };
-fn lessThan(_: void, lhs: Entry, rhs: Entry) std.math.Order {
-    return std.mem.order(u8, lhs.key, rhs.key);
-}
-
-pub fn encode(allocator: std.mem.Allocator, val: anytype) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
+pub fn encode(writer: *std.Io.Writer, val: anytype) !void {
     state: switch (@typeInfo(@TypeOf(val))) {
         .optional => {
             if (val) |v| {
-                const res = try encode(allocator, v);
-                defer allocator.free(res);
-                try result.appendSlice(allocator, res);
+                try encode(writer, v);
             }
         },
-        .int => try result.print(allocator, "i{d}e", .{val}),
+        .int => try writer.print("i{d}e", .{val}),
         .array => |arr| {
             if (arr.child == u8) {
-                try result.print(allocator, "{d}:{s}", .{ val.len, val });
+                try writer.print("{d}:{s}", .{ val.len, val });
                 break :state;
             }
 
-            try result.append(allocator, 'l');
-            for (val) |item| {
-                const res = try encode(allocator, item);
-                defer allocator.free(res);
-                try result.appendSlice(allocator, res);
-            }
-            try result.append(allocator, 'e');
+            try writer.printAsciiChar('l', .{});
+            for (val) |item| try encode(writer, item);
+            try writer.printAsciiChar('e', .{});
         },
         .@"struct" => |s| {
-            try result.append(allocator, 'd');
-            var sorted_fields: std.PriorityQueue(Entry, void, lessThan) = .initContext({});
-            defer {
-                var iter = sorted_fields.iterator();
-                while (iter.next()) |entry| {
-                    allocator.free(entry.val);
-                }
-                sorted_fields.deinit(allocator);
+            try writer.printAsciiChar('d', .{});
+            comptime var sorted_fields: [s.field_names.len]Entry = undefined;
+            inline for (s.field_names, s.field_types, 0..) |field_name, field_type, i| {
+                sorted_fields[i] = .{ .key = field_name, .val = field_type };
             }
-            inline for (s.field_names, s.field_types) |field_name, field_type| {
-                const encoded_val = encode(allocator, @field(val, field_name)) catch |err| {
-                    if (@typeInfo(field_type) == .optional) continue;
-                    return err;
-                };
-                try sorted_fields.push(allocator, .{ .key = @constCast(field_name), .val = encoded_val });
-            }
-            var entryIter = sorted_fields.iterator();
+            comptime std.mem.sort(Entry, &sorted_fields, {}, lessThan);
+            inline for (sorted_fields) |entry| {
+                // TODO: Add logic to filter out optionals that don't pass though
 
-            while (entryIter.next()) |entry| {
-                const encodedKey = try encode(allocator, entry.key);
-                defer allocator.free(encodedKey);
-                try result.print(allocator, "{s}{s}", .{ encodedKey, entry.val });
+                try encode(writer, entry.key);
+                try encode(writer, @field(val, entry.key));
             }
-            try result.append(allocator, 'e');
+            try writer.printAsciiChar('e', .{});
         },
         .pointer => |ptr| {
-            if (ptr.child == u8 and ptr.size == .slice or (@typeInfo(ptr.child) == .array and @typeInfo(ptr.child).array.child == u8)) {
-                try result.print(allocator, "{d}:{s}", .{ val.len, val });
+            if (ptr.size == .one) {
+                try encode(writer, val.*);
                 break :state;
             }
 
-            try result.append(allocator, 'l');
-            for (val) |item| {
-                const encoded_item = try encode(allocator, item);
-                defer allocator.free(encoded_item);
-                try result.appendSlice(allocator, encoded_item);
+            if (ptr.child == u8 and ptr.size == .slice) {
+                try writer.print("{d}:{s}", .{ val.len, val });
+                break :state;
             }
-            try result.append(allocator, 'e');
+
+            try writer.printAsciiChar('l', .{});
+            for (val) |item| {
+                try encode(writer, item);
+            }
+            try writer.printAsciiChar('e', .{});
         },
         else => |bad_field| {
             std.debug.print("bad field: {any}\n", .{bad_field});
             return error.unexpectedField;
         },
     }
+}
 
-    return result.toOwnedSlice(allocator);
+const Entry = struct { key: []const u8, val: type };
+fn lessThan(_: void, lhs: Entry, rhs: Entry) bool {
+    return std.mem.order(u8, lhs.key, rhs.key) == .lt;
 }
 
 fn bencodeWrapper(comptime T: type) type {
@@ -166,7 +147,7 @@ fn toStruct(allocator: std.mem.Allocator, T: type, expr: *Parser.Expr) DecodeErr
                 else => return DecodeError.unexpectedType,
             }
         },
-        else => return DecodeError.unexpectedField,
+        else => return DecodeError.unexpectedType,
     }
 }
 
@@ -196,36 +177,24 @@ test decode {
     try expectError(DecodeError.unexpectedType, decode(allocator, *People, input));
 }
 
+fn testEncode(expected: []const u8, val: anytype) !void {
+    var writer = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer writer.deinit();
+    try encode(&writer.writer, val);
+    try expectEqualStrings(expected, writer.written());
+}
+
 test encode {
-    const allocator = std.testing.allocator;
-    const num = try encode(allocator, @as(i32, 32));
-    defer allocator.free(num);
-    try expectEqualStrings("i32e", num);
-    const str = try encode(allocator, "bob");
-    defer allocator.free(str);
-    try expectEqualStrings("3:bob", str);
-    const numList = try encode(allocator, &[_]i32{ 1, 2, 3 });
-    defer allocator.free(numList);
-    try expectEqualStrings("li1ei2ei3ee", numList);
-    const strList = try encode(allocator, &[_][]const u8{ "one", "two", "three" });
-    defer allocator.free(strList);
-    try expectEqualStrings("l3:one3:two5:threee", strList);
-    const numListList = try encode(allocator, &[_][]const i32{ &.{1}, &.{2} });
-    defer allocator.free(numListList);
-    try expectEqualStrings("lli1eeli2eee", numListList);
+    try testEncode("i32e", @as(i32, 32));
+    try testEncode("3:bob", "bob");
+    try testEncode("li1ei2ei3ee", &[_]i32{ 1, 2, 3 });
+    try testEncode("l3:one3:two5:threee", &[_][]const u8{ "one", "two", "three" });
+    try testEncode("lli1eeli2eee", &[_][]const i32{ &.{1}, &.{2} });
     const numNums: [2][1][]const u8 = .{ [1][]const u8{"one"}, [1][]const u8{"two"} };
-    const strListList = try encode(allocator, numNums);
-    defer allocator.free(strListList);
-    try expectEqualStrings("ll3:oneel3:twoee", strListList);
+    try testEncode("ll3:oneel3:twoee", numNums);
     const Person = struct { name: []const u8, age: u8 };
-    const person = try encode(allocator, Person{ .name = "bob", .age = 32 });
-    defer allocator.free(person);
-    try expectEqualStrings("d3:agei32e4:name3:bobe", person);
-    const people = try encode(allocator, &[_]Person{ .{ .name = "bob", .age = 32 }, .{ .name = "jeff", .age = 19 } });
-    defer allocator.free(people);
-    try expectEqualStrings("ld3:agei32e4:name3:bobed3:agei19e4:name4:jeffee", people);
+    try testEncode("d3:agei32e4:name3:bobe", Person{ .name = "bob", .age = 32 });
+    try testEncode("ld3:agei32e4:name3:bobed3:agei19e4:name4:jeffee", &[_]Person{ .{ .name = "bob", .age = 32 }, .{ .name = "jeff", .age = 19 } });
     const Relationships = struct { friends: []const Person, enemies: []Person = &.{} };
-    const relations = try encode(allocator, Relationships{ .friends = &[_]Person{.{ .name = "bob", .age = 32 }} });
-    defer allocator.free(relations);
-    try expectEqualStrings("d7:enemiesle7:friendsld3:agei32e4:name3:bobeee", relations);
+    try testEncode("d7:enemiesle7:friendsld3:agei32e4:name3:bobeee", Relationships{ .friends = &[_]Person{.{ .name = "bob", .age = 32 }} });
 }
