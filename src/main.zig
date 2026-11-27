@@ -29,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
         const torrent = try BitTorrent.readFile(allocator, io, torrentFile);
         try stdout.interface.print("Tracker URL: {s}\n", .{torrent.announce});
         try stdout.interface.print("Length: {d}\n", .{torrent.info.length});
-        try stdout.interface.print("Info Hash: {x}\n", .{try torrent.infoHash(allocator)});
+        try stdout.interface.print("Info Hash: {x}\n", .{try torrent.infoHash()});
         try stdout.interface.print("Piece Length: {d}\n", .{torrent.info.@"piece length"});
         try stdout.interface.print("Piece Hashes:\n", .{});
         for (torrent.pieces()) |piece| {
@@ -50,42 +50,81 @@ pub fn main(init: std.process.Init) !void {
         defer parsed.deinit(allocator);
         std.debug.print("{s}\n", .{try parsed.toString(allocator, true)});
     } else if (eql(u8, "handshake", command)) {
+        var url_buffer: [Io.net.HostName.max_len]u8 = undefined;
         const torrentFile = argsIter.next() orelse return error.InvalidArgLength;
         const url = argsIter.next() orelse return error.InvalidArgLength;
+
+        const formattedUrl = try allocator.print("http://{s}", .{url});
+        defer allocator.free(formattedUrl);
         const torrent = try BitTorrent.readFile(allocator, io, torrentFile);
-        const address = try std.Io.net.IpAddress.parseLiteral(url);
-        var peer = Peer{ .stream = try address.connect(io, .{ .mode = .stream, .protocol = .tcp }) };
-        defer peer.close(io);
-        const response = try peer.handshake(io, try torrent.infoHash(allocator));
-        try stdout.interface.print("Peer ID: {x}\n", .{response.peer_id});
+        const uri = try std.Uri.parse(formattedUrl);
+        var client = std.http.Client{ .allocator = allocator, .io = io };
+
+        var connection = try client.connectTcp(try .fromUri(uri, url_buffer[0..]), uri.port.?, .plain);
+        defer connection.destroy(io);
+        const reader = connection.reader();
+        const writer = connection.writer();
+
+        const hs = try Peer.handshake(reader, writer, try torrent.infoHash());
+        try stdout.interface.print("Peer ID: {x}\n", .{hs.peer_id});
     } else if (eql(u8, "download_piece", command)) {
         _ = argsIter.next();
         _ = argsIter.next();
         const torrentFile = argsIter.next() orelse return error.InvalidArgLength;
         _ = argsIter.next();
-        std.debug.print("File: {s}\n", .{torrentFile});
+        var url_buffer: [Io.net.HostName.max_len]u8 = undefined;
         const torrent = try BitTorrent.readFile(allocator, io, torrentFile);
+        const hash = try torrent.infoHash();
         const tracker_resp = try torrent.getPeers(allocator, io);
-        const peers = p: {
-            var peers = try allocator.alloc(Peer, tracker_resp.peers.len);
+        var client = std.http.Client{ .allocator = allocator, .io = io };
+        const connections = c: {
+            var connections = try allocator.alloc(*std.http.Client.Connection, tracker_resp.peers.len);
             var i: usize = 0;
+
             for (tracker_resp.peers) |address| {
-                peers[i] = Peer{ .stream = address.connect(io, .{ .mode = .stream, .protocol = .tcp }) catch continue };
+                const formatted_uri = try allocator.print("http://{f}", .{address});
+                defer allocator.free(formatted_uri);
+                const uri = std.Uri.parse(formatted_uri) catch continue;
+                const connection = client.connectTcp(try .fromUri(uri, url_buffer[0..]), uri.port.?, .plain) catch continue;
+                connections[i] = connection;
                 i += 1;
             }
+
             if (i == 0) return error.NoAvailablePeers;
-            break :p peers[0..i];
+            break :c connections[0..i];
         };
         defer {
-            for (peers) |*peer| peer.close(io);
-            allocator.free(peers);
+            for (connections) |connection| connection.destroy(io);
+            allocator.free(connections);
         }
 
-        const info_hash = try torrent.infoHash(allocator);
         var group = Io.Group.init;
-        for (peers) |*peer| try group.concurrent(io, Peer.getPiece, .{ peer, io, info_hash });
+        for (connections) |connection| group.async(io, download, .{ connection, hash });
         try group.await(io);
     } else {
         return error.InvalidCommand;
     }
+}
+
+fn download(connection: *std.http.Client.Connection, info_hash: [20]u8) Io.Cancelable!void {
+    downloadPiece(connection, info_hash) catch return error.Canceled;
+}
+
+fn downloadPiece(connection: *std.http.Client.Connection, info_hash: [20]u8) !void {
+    const reader = connection.reader();
+    const writer = connection.writer();
+    const handshake = try Peer.handshake(reader, writer, info_hash);
+    std.debug.print("Peer ID: {x}\n", .{handshake.peer_id});
+
+    if (handshake.bitfield) |bitfield| {
+        std.debug.print("Bitfield included: {any}\n", .{bitfield});
+    } else {
+        const bitfield = try Peer.receiveMessage(reader, .bitfield);
+        std.debug.print("Bitfield requested: {any}\n", .{bitfield});
+    }
+
+    try Peer.sendMessage(writer, .interested);
+    std.debug.print("Sent interested\n", .{});
+    try Peer.receiveMessage(reader, .unchoke);
+    std.debug.print("Received unchoke\n", .{});
 }

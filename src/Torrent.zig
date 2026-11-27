@@ -21,15 +21,13 @@ pub const BitTorrent = struct {
         return pieceHashes;
     }
 
-    pub fn infoHash(self: *const Self, allocator: std.mem.Allocator) ![20]u8 {
-        var writer = std.Io.Writer.Allocating.init(allocator);
-        defer writer.deinit();
+    pub fn infoHash(self: *const Self) ![20]u8 {
+        var buffer: [1024]u8 = undefined;
+        var writer: std.Io.Writer.Hashing(std.crypto.hash.Sha1) = .init(buffer[0..]);
         try Bencode.encode(&writer.writer, self.info);
         try writer.writer.flush();
-        var hasher = std.crypto.hash.Sha1.init(.{});
-        hasher.update(writer.written());
         var hash_buffer: [20]u8 = undefined;
-        hasher.final(&hash_buffer);
+        writer.hasher.final(&hash_buffer);
         return hash_buffer;
     }
 
@@ -39,7 +37,7 @@ pub const BitTorrent = struct {
         var bodyWriter = std.Io.Writer.Allocating.init(allocator);
         defer bodyWriter.deinit();
 
-        const hash = try self.infoHash(allocator);
+        const hash = try self.infoHash();
         var hash_writer = std.Io.Writer.Allocating.init(allocator);
         defer hash_writer.deinit();
         try std.Uri.Component.percentEncode(&hash_writer.writer, &hash, isUnreserved);
