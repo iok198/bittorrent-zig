@@ -5,6 +5,7 @@ const Parser = @import("parser.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const Bencode = @import("bencode.zig");
 const BitTorrent = @import("Torrent.zig").BitTorrent;
+const Peer = @import("Peer.zig");
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
@@ -52,18 +53,38 @@ pub fn main(init: std.process.Init) !void {
         const torrentFile = argsIter.next() orelse return error.InvalidArgLength;
         const url = argsIter.next() orelse return error.InvalidArgLength;
         const torrent = try BitTorrent.readFile(allocator, io, torrentFile);
-
         const address = try std.Io.net.IpAddress.parseLiteral(url);
-        const stream = try address.connect(io, .{ .mode = .stream });
-        defer stream.close(io);
-        var payload: [68]u8 = undefined;
-        var payload_writer = std.Io.Writer.fixed(&payload);
-        try payload_writer.print("{u}BitTorrent protocol{s}{s}{s}", .{ 19, @as([8]u8, @splat(0)), try torrent.infoHash(allocator), "01234567890123456789" });
+        var peer = Peer{ .stream = try address.connect(io, .{ .mode = .stream, .protocol = .tcp }) };
+        defer peer.close(io);
+        const response = try peer.handshake(io, try torrent.infoHash(allocator));
+        try stdout.interface.print("Peer ID: {x}\n", .{response.peer_id});
+    } else if (eql(u8, "download_piece", command)) {
+        _ = argsIter.next();
+        _ = argsIter.next();
+        const torrentFile = argsIter.next() orelse return error.InvalidArgLength;
+        _ = argsIter.next();
+        std.debug.print("File: {s}\n", .{torrentFile});
+        const torrent = try BitTorrent.readFile(allocator, io, torrentFile);
+        const tracker_resp = try torrent.getPeers(allocator, io);
+        const peers = p: {
+            var peers = try allocator.alloc(Peer, tracker_resp.peers.len);
+            var i: usize = 0;
+            for (tracker_resp.peers) |address| {
+                peers[i] = Peer{ .stream = address.connect(io, .{ .mode = .stream, .protocol = .tcp }) catch continue };
+                i += 1;
+            }
+            if (i == 0) return error.NoAvailablePeers;
+            break :p peers[0..i];
+        };
+        defer {
+            for (peers) |*peer| peer.close(io);
+            allocator.free(peers);
+        }
 
-        var buffer: [68]u8 = undefined;
-        try stream.socket.send(io, &address, &payload);
-        const response = try stream.socket.receive(io, &buffer);
-        try stdout.interface.print("Peer ID: {x}\n", .{response.data[48..]});
+        const info_hash = try torrent.infoHash(allocator);
+        var group = Io.Group.init;
+        for (peers) |*peer| try group.concurrent(io, Peer.getPiece, .{ peer, io, info_hash });
+        try group.await(io);
     } else {
         return error.InvalidCommand;
     }

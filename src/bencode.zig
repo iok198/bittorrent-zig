@@ -137,6 +137,7 @@ fn toStruct(allocator: std.mem.Allocator, T: type, expr: *Parser.Expr) DecodeErr
                             if (@typeInfo(field_type) == .optional) {
                                 @field(result, field_name) = null;
                             } else {
+                                std.debug.print("Missing field: {s}\n", .{field_name});
                                 return DecodeError.missingField;
                             }
                         }

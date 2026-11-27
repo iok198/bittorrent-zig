@@ -76,18 +76,3 @@ pub const TrackerResponse = struct { peers: []IpAddress, interval: u32 };
 fn isUnreserved(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '-' or c == '.' or c == '_' or c == '~' or c == '&' or c == '=' or c == '/' or c == ':' or c == '?';
 }
-
-const PeerMessage = union(enum) {
-    choke,
-    unchoke,
-    interested,
-    not_interested,
-    /// the index which that downloader just completed and checked the hash of.
-    have: u32,
-    /// a bitfield with each index that downloader has sent set to one and the
-    /// rest set to zero.
-    bitfield: u16,
-    request: struct { index: u14, begin: u14, length: u14 },
-    piece,
-    cancel,
-};
