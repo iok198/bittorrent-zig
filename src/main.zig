@@ -65,8 +65,10 @@ pub fn main(init: std.process.Init) !void {
         const reader = connection.reader();
         const writer = connection.writer();
 
-        const hs = try Peer.handshake(reader, writer, try torrent.infoHash());
-        try stdout.interface.print("Peer ID: {x}\n", .{hs.peer_id});
+        const info_hash = try torrent.infoHash();
+        try Peer.sendHandshake(writer, info_hash);
+        const peer_id = try Peer.receiveHandshake(reader, info_hash);
+        try stdout.interface.print("Peer ID: {x}\n", .{peer_id});
     } else if (eql(u8, "download_piece", command)) {
         _ = argsIter.next();
         _ = argsIter.next();
@@ -107,22 +109,20 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn download(connection: *std.http.Client.Connection, info_hash: [20]u8) Io.Cancelable!void {
-    downloadPiece(connection, info_hash) catch return error.Canceled;
+    downloadPiece(connection, info_hash) catch |err| {
+        std.debug.print("Error downloading: {}\n", .{err});
+        return error.Canceled;
+    };
 }
 
 fn downloadPiece(connection: *std.http.Client.Connection, info_hash: [20]u8) !void {
     const reader = connection.reader();
     const writer = connection.writer();
-    const handshake = try Peer.handshake(reader, writer, info_hash);
-    std.debug.print("Peer ID: {x}\n", .{handshake.peer_id});
-
-    if (handshake.bitfield) |bitfield| {
-        std.debug.print("Bitfield included: {any}\n", .{bitfield});
-    } else {
-        const bitfield = try Peer.receiveMessage(reader, .bitfield);
-        std.debug.print("Bitfield requested: {any}\n", .{bitfield});
-    }
-
+    try Peer.sendHandshake(writer, info_hash);
+    const peer_id = try Peer.receiveHandshake(reader, info_hash);
+    std.debug.print("Peer ID: {x}\n", .{peer_id});
+    const bitfield = Peer.receiveMessage(reader, .bitfield);
+    std.debug.print("Bitfield: {any}\n", .{bitfield});
     try Peer.sendMessage(writer, .interested);
     std.debug.print("Sent interested\n", .{});
     try Peer.receiveMessage(reader, .unchoke);

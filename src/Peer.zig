@@ -26,40 +26,35 @@ pub const Message = union(MessageTag) {
     cancel,
 };
 
-pub fn handshake(reader: *Io.Reader, writer: *Io.Writer, hash: [20]u8) !struct { hash: [20]u8, peer_id: [20]u8, bitfield: ?[]u8 } {
-    try writer.print("{u}BitTorrent protocol{s}{s}{s}", .{ 19, @as([8]u8, @splat(0)), hash, "01234567890123456789" });
+pub fn sendHandshake(writer: *Io.Writer, hash: [20]u8) !void {
+    try writer.writeByte(19);
+    try writer.print("BitTorrent protocol", .{});
+    try writer.splatByteAll(0, 8);
+    try writer.writeAll(&hash);
+    try writer.print("01234567890123456789", .{});
     try writer.flush();
-    const bytes = try reader.take(68);
+}
 
-    if (bytes[0] != 19) return error.BadResponse;
-    if (!std.mem.eql(u8, "BitTorrent protocol", bytes[1..][0..19])) return error.BadResponse;
-    if (!std.mem.eql(u8, &hash, bytes[28..][0..20])) return error.BadResponse;
+pub fn receiveHandshake(reader: *Io.Reader, info_hash: [20]u8) ![20]u8 {
+    if (try reader.takeByte() != 19) return error.BadResponse;
+    if (!std.mem.eql(u8, "BitTorrent protocol", try reader.take(19))) return error.BadResponse;
+    _ = try reader.take(8);
+    if (!std.mem.eql(u8, &info_hash, try reader.take(20))) return error.BadResponse;
 
-    const msg = m: {
-        const len = reader.takeInt(u32, .big) catch break :m null;
-        const tag = reader.takeEnum(MessageTag, .big) catch break :m null;
-        const rest = reader.take(len - 1) catch break :m null;
-
-        switch (tag) {
-            .bitfield => break :m rest,
-            else => break :m null,
-        }
-    };
-
-    return .{ .hash = bytes[28..][0..20].*, .peer_id = bytes[48..][0..20].*, .bitfield = msg };
+    const peer_id = try reader.takeArray(20);
+    return peer_id.*;
 }
 
 pub fn receiveMessage(reader: *Io.Reader, comptime tag: MessageTag) !@FieldType(Message, @tagName(tag)) {
-    const len = try reader.takeInt(u32, .big);
+    const len = try reader.takeInt(u32, .big) - 1;
     const received_tag = try reader.takeEnum(MessageTag, .big);
     if (received_tag != tag) {
         std.debug.print("Unexpected tag: {t}\n", .{received_tag});
         return error.UnexpectedMessage;
     }
-    const rest = try reader.take(len - 1);
 
     const result: Message = r: switch (received_tag) {
-        .bitfield => break :r .{ .bitfield = rest },
+        .bitfield => break :r .{ .bitfield = try reader.take(len) },
         .unchoke => break :r .unchoke,
         .choke => break :r .choke,
         .interested => break :r .interested,
@@ -74,7 +69,15 @@ pub fn receiveMessage(reader: *Io.Reader, comptime tag: MessageTag) !@FieldType(
 }
 
 pub fn sendMessage(writer: *Io.Writer, msg: Message) !void {
-    try writer.writeInt(u32, 0, .big);
-    try writer.writeByte(@backingInt(msg));
+    switch (msg) {
+        .interested => {
+            try writer.writeInt(u32, 1, .big);
+            try writer.splatByteAll(@backingInt(msg), 2);
+        },
+        else => {
+            try writer.writeInt(u32, 0, .big);
+            try writer.writeByte(@backingInt(msg));
+        },
+    }
     try writer.flush();
 }
