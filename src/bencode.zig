@@ -18,6 +18,8 @@ pub fn encode(writer: *std.Io.Writer, val: anytype) !void {
         .optional => {
             if (val) |v| {
                 try encode(writer, v);
+            } else {
+                return error.OptionalEmpty;
             }
         },
         .int => try writer.print("i{d}e", .{val}),
@@ -39,10 +41,15 @@ pub fn encode(writer: *std.Io.Writer, val: anytype) !void {
             }
             comptime std.mem.sort(Entry, &sorted_fields, {}, lessThan);
             inline for (sorted_fields) |entry| {
-                // TODO: Add logic to filter out optionals that don't pass though
-
+                const key_len = entry.key.len + std.math.log10(entry.key.len) + 2;
                 try encode(writer, entry.key);
-                try encode(writer, @field(val, entry.key));
+                encode(writer, @field(val, entry.key)) catch |err| {
+                    if (err == error.OptionalEmpty) {
+                        writer.undo(key_len);
+                    } else {
+                        return err;
+                    }
+                };
             }
             try writer.printAsciiChar('e', .{});
         },
@@ -63,11 +70,10 @@ pub fn encode(writer: *std.Io.Writer, val: anytype) !void {
             }
             try writer.printAsciiChar('e', .{});
         },
-        else => |bad_field| {
-            std.debug.print("bad field: {any}\n", .{bad_field});
-            return error.unexpectedField;
-        },
+        else => @compileError("Cannot encode type: " ++ @typeName(@TypeOf(val))),
     }
+
+    try writer.flush();
 }
 
 const Entry = struct { key: []const u8, val: type };
@@ -137,7 +143,7 @@ fn toStruct(allocator: std.mem.Allocator, T: type, expr: *Parser.Expr) DecodeErr
                             if (@typeInfo(field_type) == .optional) {
                                 @field(result, field_name) = null;
                             } else {
-                                std.debug.print("Missing field: {s}\n", .{field_name});
+                                // std.debug.print("Missing field: {s}\n", .{field_name});
                                 return DecodeError.missingField;
                             }
                         }
@@ -198,4 +204,8 @@ test encode {
     try testEncode("ld3:agei32e4:name3:bobed3:agei19e4:name4:jeffee", &[_]Person{ .{ .name = "bob", .age = 32 }, .{ .name = "jeff", .age = 19 } });
     const Relationships = struct { friends: []const Person, enemies: []Person = &.{} };
     try testEncode("d7:enemiesle7:friendsld3:agei32e4:name3:bobeee", Relationships{ .friends = &[_]Person{.{ .name = "bob", .age = 32 }} });
+    const Spy = struct { name: []const u8, age: ?u8 };
+    try testEncode("d3:agei32e4:name3:bobe", Spy{ .name = "bob", .age = 32 });
+    try testEncode("d4:name3:bobe", Spy{ .name = "bob", .age = null });
+    // try testEncode("i1e", true);
 }
